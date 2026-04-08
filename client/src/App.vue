@@ -1,9 +1,14 @@
 <script setup>
 import Navbar from './components/Navbar.vue';
+import { computed } from 'vue';
+import { useRoute } from 'vue-router';
+
+const route = useRoute();
+const showNavbar = computed(() => !route.meta.hideNavbar);
 </script>
 
 <template>
-  <Navbar />
+  <Navbar v-if="showNavbar" />
   <router-view v-slot="{ Component }">
     <transition name="fade" mode="out-in">
       <component :is="Component" />
