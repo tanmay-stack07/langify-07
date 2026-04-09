@@ -231,11 +231,11 @@ onUnmounted(() => {
   z-index: 1;
   max-width: 1280px;
   margin: 0 auto;
-  padding: 7.5rem 2rem 2rem;
+  padding: 6.5rem 2rem 1.25rem;
 }
 
 .hero-copy {
-  max-width: 760px;
+  max-width: 820px;
 }
 
 .hero-copy__eyebrow,
@@ -263,17 +263,17 @@ onUnmounted(() => {
   margin-top: 1.3rem;
   max-width: 62ch;
   color: rgba(244, 241, 239, 0.72);
-  line-height: 1.8;
-  font-size: 1.02rem;
+  line-height: 1.9;
+  font-size: 1.08rem;
 }
 
 .hero-void {
   position: relative;
-  min-height: 12vh;
+  min-height: 7vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 1rem 0 0.8rem;
+  margin: 0.5rem 0 0.55rem;
 }
 
 .hero-void__line,
@@ -347,7 +347,7 @@ onUnmounted(() => {
 .scroll-story {
   position: relative;
   z-index: 1;
-  height: 205vh;
+  height: 150vh;
   margin-top: 0;
 }
 
@@ -392,16 +392,16 @@ onUnmounted(() => {
   position: relative;
   z-index: 1;
   display: grid;
-  align-items: center;
+  align-items: end;
   min-height: 100vh;
   max-width: 1280px;
   margin: 0 auto;
-  padding: 0 2rem;
+  padding: 0 2rem 4rem;
 }
 
 .story-card {
-  max-width: 640px;
-  padding: 2rem;
+  max-width: 760px;
+  padding: 2.5rem;
   border-radius: 28px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(8, 11, 18, 0.46);
@@ -432,7 +432,9 @@ onUnmounted(() => {
 
 .story-card h2 {
   margin-top: 0;
-  font-size: clamp(2.6rem, 6vw, 5.2rem);
+  font-size: clamp(3rem, 6.2vw, 5.7rem);
+  line-height: 0.98;
+  max-width: 12ch;
 }
 
 .story-card__points {
@@ -442,11 +444,12 @@ onUnmounted(() => {
 }
 
 .story-card__point {
-  padding: 0.95rem 1rem;
+  padding: 1.1rem 1.15rem;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: rgba(244, 241, 239, 0.82);
+  font-size: 1.02rem;
 }
 
 .story-card__progress {
@@ -473,11 +476,11 @@ onUnmounted(() => {
 }
 
 .scroll-story__chapter {
-  height: 32vh;
+  height: 14vh;
 }
 
 .landing-finish {
-  padding-top: 0;
+  padding-top: 0.5rem;
   padding-bottom: 4rem;
 }
 
@@ -549,7 +552,7 @@ onUnmounted(() => {
   }
 
   .landing-finish {
-    padding-top: 0.5rem;
+    padding-top: 0.25rem;
   }
 
   .hero-copy h1,
@@ -558,11 +561,11 @@ onUnmounted(() => {
   }
 
   .hero-void {
-    min-height: 8vh;
+    min-height: 3vh;
   }
 
   .story-card {
-    padding: 1.25rem;
+    padding: 1.35rem;
   }
 
   .landing-finish__card {
@@ -570,11 +573,16 @@ onUnmounted(() => {
   }
 
   .scroll-story {
-    height: 170vh;
+    height: 122vh;
   }
 
   .scroll-story__chapter {
-    height: 26vh;
+    height: 10vh;
+  }
+
+  .story-stage__content {
+    align-items: end;
+    padding-bottom: 1.5rem;
   }
 }
 </style>
