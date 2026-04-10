@@ -2,20 +2,22 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const { transcribeAudio } = require('./services/transcriptionService');
 const { translateText } = require('./services/translationService');
 const { logUsage } = require('./utils/costTracker');
-const supabase = require('./supabaseClient');
+const { serviceSupabase, authSupabase } = require('./supabaseClients');
+const { requireAuth } = require('./middleware/requireAuth');
+const { attachUserIfPresent } = require('./middleware/attachUserIfPresent');
+const { parseCookies, setSessionCookies, clearSessionCookies } = require('./utils/authCookies');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Startup Guard
-const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'GROQ_API_KEY'];
+const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'GROQ_API_KEY'];
 const missing = REQUIRED_ENV.filter(key => !process.env[key]);
 
 if (missing.length > 0) {
@@ -24,7 +26,23 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-app.use(cors());
+const allowedOrigins = [
+  'http://127.0.0.1:4173',
+  'http://localhost:4173',
+  'http://127.0.0.1:5173',
+  'http://localhost:5173'
+];
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true
+}));
 app.use(morgan('dev'));
 app.use(express.json());
 
@@ -51,6 +69,14 @@ const translateLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { error: 'Too many authentication attempts. Please wait a few minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ==========================
 // Health Check
 // ==========================
@@ -64,6 +90,120 @@ app.get('/api/health', (req, res) => {
       llm: 'llama-3.3-70b-versatile'
     }
   });
+});
+
+// ==========================
+// Auth Endpoints
+// ==========================
+app.post('/api/auth/signup', authLimiter, async (req, res) => {
+  try {
+    const name = req.body.name?.trim();
+    const email = req.body.email?.trim();
+    const password = req.body.password;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required.' });
+    }
+
+    const { data, error } = await authSupabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { name }
+      }
+    });
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    if (!data.session) {
+      return res.status(400).json({
+        error: 'Signup succeeded but no active session was returned. Disable email confirmation in Supabase Auth to use immediate login.'
+      });
+    }
+
+    setSessionCookies(res, data.session);
+    res.json({
+      success: true,
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        name: data.user.user_metadata?.name || data.user.email
+      }
+    });
+  } catch (error) {
+    console.error('Signup Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/auth/login', authLimiter, async (req, res) => {
+  try {
+    const email = req.body.email?.trim();
+    const password = req.body.password;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    const { data, error } = await authSupabase.auth.signInWithPassword({ email, password });
+
+    if (error) {
+      return res.status(401).json({ error: error.message });
+    }
+
+    setSessionCookies(res, data.session);
+    res.json({
+      success: true,
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        name: data.user.user_metadata?.name || data.user.email
+      }
+    });
+  } catch (error) {
+    console.error('Login Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/auth/me', async (req, res) => {
+  try {
+    const cookies = parseCookies(req);
+    const accessToken = cookies['langify-access-token'];
+
+    if (!accessToken) {
+      return res.status(401).json({ error: 'Not signed in.' });
+    }
+
+    const { data, error } = await authSupabase.auth.getUser(accessToken);
+
+    if (error || !data.user) {
+      return res.status(401).json({ error: 'Invalid or expired session.' });
+    }
+
+    res.json({
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        name: data.user.user_metadata?.name || data.user.email
+      }
+    });
+  } catch (error) {
+    console.error('Auth Me Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    clearSessionCookies(res);
+    res.json({ success: true });
+  } catch {
+    clearSessionCookies(res);
+    res.json({ success: true });
+  }
 });
 
 // ==========================
@@ -91,7 +231,7 @@ app.post('/api/transcribe', transcribeLimiter, upload.single('audio'), async (re
 // ==========================
 // Translate Pipeline Endpoint
 // ==========================
-app.post('/api/translate', translateLimiter, upload.single('audio'), async (req, res) => {
+app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single('audio'), async (req, res) => {
   try {
     const { sessionId, targetLanguage } = req.body;
     
@@ -115,7 +255,7 @@ app.post('/api/translate', translateLimiter, upload.single('audio'), async (req,
 
     // 4. Persistence (Supabase)
     if (sessionId) {
-      const { error: dbError } = await supabase
+      const { error: dbError } = await serviceSupabase
         .from('utterances')
         .insert([{
           session_id: sessionId,
@@ -123,7 +263,7 @@ app.post('/api/translate', translateLimiter, upload.single('audio'), async (req,
           text_translated: translatedText,
           language_code: detectedLanguage
         }]);
-      
+
       if (dbError) console.error('Supabase Persistence Error:', dbError);
     }
 
@@ -138,7 +278,15 @@ app.post('/api/translate', translateLimiter, upload.single('audio'), async (req,
   } catch (error) {
     try { if (req.file) fs.unlinkSync(req.file.path); } catch {}
     console.error('Pipeline Error:', error);
-    res.status(500).json({ error: error.message });
+    const status = error.status === 403 ? 403 : 500;
+    const errorCode = error.status === 403 ? 'AI_PROVIDER_ACCESS_DENIED' : 'PIPELINE_FAILED';
+
+    res.status(status).json({
+      error: error.message,
+      errorCode,
+      provider: error.provider || 'unknown',
+      providerMessage: error.providerMessage || error.message
+    });
   }
 });
 
@@ -147,11 +295,14 @@ app.post('/api/translate', translateLimiter, upload.single('audio'), async (req,
 // ==========================
 
 // Create a new session
-app.post('/api/sessions', async (req, res) => {
+app.post('/api/sessions', attachUserIfPresent, async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await serviceSupabase
       .from('sessions')
-      .insert([{ metadata: req.body.metadata || {} }])
+      .insert([{
+        metadata: req.body.metadata || {},
+        user_id: req.user?.id || null
+      }])
       .select()
       .single();
 
@@ -164,11 +315,16 @@ app.post('/api/sessions', async (req, res) => {
 });
 
 // List all sessions
-app.get('/api/sessions', async (req, res) => {
+app.get('/api/sessions', attachUserIfPresent, async (req, res) => {
   try {
-    const { data, error } = await supabase
+    if (!req.user) {
+      return res.json({ sessions: [] });
+    }
+
+    const { data, error } = await serviceSupabase
       .from('sessions')
       .select('*')
+      .eq('user_id', req.user.id)
       .order('created_at', { ascending: false })
       .limit(50);
 
@@ -181,9 +337,23 @@ app.get('/api/sessions', async (req, res) => {
 });
 
 // Get utterances for a session
-app.get('/api/sessions/:sessionId/utterances', async (req, res) => {
+app.get('/api/sessions/:sessionId/utterances', attachUserIfPresent, async (req, res) => {
   try {
-    const { data, error } = await supabase
+    if (!req.user) {
+      return res.json({ utterances: [] });
+    }
+
+    const { data: ownedSession, error: sessionError } = await serviceSupabase
+      .from('sessions')
+      .select('id, user_id')
+      .eq('id', req.params.sessionId)
+      .single();
+
+    if (sessionError || !ownedSession || ownedSession.user_id !== req.user.id) {
+      return res.status(404).json({ error: 'Session not found.' });
+    }
+
+    const { data, error } = await serviceSupabase
       .from('utterances')
       .select('*')
       .eq('session_id', req.params.sessionId)

@@ -1,9 +1,12 @@
 <script setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { useAuth } from '../composables/useAuth';
 
 const router = useRouter();
+const { login, signup, testingGuest, authLoading } = useAuth();
 const mode = ref('login');
+const error = ref('');
 
 const loginForm = ref({
   email: '',
@@ -16,11 +19,45 @@ const signupForm = ref({
   password: ''
 });
 
-const submitLogin = () => {
-  router.push('/planned-ui');
+const submitLabel = computed(() => (mode.value === 'login' ? 'Continue to App' : 'Create Account'));
+
+const submitLogin = async () => {
+  if (!loginForm.value.email.trim() || !loginForm.value.password.trim()) {
+    error.value = 'Enter email and password to continue.';
+    return;
+  }
+
+  try {
+    error.value = '';
+    await login({ email: loginForm.value.email, password: loginForm.value.password });
+    router.push('/planned-ui');
+  } catch (err) {
+    error.value = err.response?.data?.error || 'Login failed. Check your credentials and try again.';
+  }
 };
 
-const submitSignup = () => {
+const submitSignup = async () => {
+  if (!signupForm.value.name.trim() || !signupForm.value.email.trim() || !signupForm.value.password.trim()) {
+    error.value = 'Fill in name, email, and password to create the account.';
+    return;
+  }
+
+  try {
+    error.value = '';
+    await signup({
+      name: signupForm.value.name,
+      email: signupForm.value.email,
+      password: signupForm.value.password
+    });
+    router.push('/planned-ui');
+  } catch (err) {
+    error.value = err.response?.data?.error || 'Sign up failed. Please try again.';
+  }
+};
+
+const continueAsGuest = () => {
+  error.value = '';
+  testingGuest();
   router.push('/planned-ui');
 };
 </script>
@@ -35,14 +72,14 @@ const submitSignup = () => {
         <p class="auth-intro__eyebrow">Langify Access</p>
         <h1>Enter the app.</h1>
         <p>
-          This is a temporary frontend-only auth screen. For now, any login or signup input is
-          accepted and continues into the main app.
+          Sign up or log in through the backend auth flow. Sessions and history then stay tied to
+          the correct user in the database.
         </p>
 
         <div class="auth-intro__chips">
-          <span>Frontend only</span>
-          <span>Open access for now</span>
-          <span>Routes to main app</span>
+          <span>Supabase-backed auth</span>
+          <span>Protected app route</span>
+          <span>User-owned sessions</span>
         </div>
       </div>
 
@@ -61,7 +98,7 @@ const submitSignup = () => {
             <span>Password</span>
             <input v-model="loginForm.password" type="password" placeholder="Enter any password" />
           </label>
-          <button type="submit" class="auth-submit">Continue to App</button>
+          <button type="submit" class="auth-submit" :disabled="authLoading">{{ authLoading ? 'Working...' : submitLabel }}</button>
         </form>
 
         <form v-else class="auth-form" @submit.prevent="submitSignup">
@@ -77,10 +114,14 @@ const submitSignup = () => {
             <span>Password</span>
             <input v-model="signupForm.password" type="password" placeholder="Create any password" />
           </label>
-          <button type="submit" class="auth-submit">Create Account</button>
+          <button type="submit" class="auth-submit" :disabled="authLoading">{{ authLoading ? 'Working...' : submitLabel }}</button>
         </form>
 
-        <router-link to="/planned-ui" class="auth-skip">Skip for now</router-link>
+        <p v-if="error" class="auth-error">{{ error }}</p>
+
+        <button type="button" class="auth-guest" @click="continueAsGuest">
+          Continue to App for Testing
+        </button>
       </div>
     </section>
   </div>
@@ -165,8 +206,7 @@ const submitSignup = () => {
   margin-top: 1.6rem;
 }
 
-.auth-intro__chips span,
-.auth-skip {
+.auth-intro__chips span {
   padding: 0.65rem 0.9rem;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -242,9 +282,27 @@ const submitSignup = () => {
   font-weight: 800;
 }
 
-.auth-skip {
-  display: inline-flex;
-  margin-top: 1rem;
+.auth-error {
+  margin-top: 0.9rem;
+  padding: 0.85rem 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 115, 115, 0.25);
+  background: rgba(255, 115, 115, 0.08);
+  color: #ffb5b5;
+}
+
+.auth-guest {
+  width: 100%;
+  margin-top: 0.9rem;
+  padding: 0.95rem 1.1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(244, 241, 239, 0.84);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.74rem;
+  font-weight: 700;
 }
 
 @media (max-width: 900px) {

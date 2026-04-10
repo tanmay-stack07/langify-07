@@ -34,7 +34,11 @@ async function transcribeAudio(filePath, originalName, responseFormat = 'verbose
     return transcription;
   } catch (error) {
     console.error('Groq Whisper Transcription Error:', error);
-    throw new Error('Transcription failed: ' + error.message);
+    const wrappedError = new Error('Transcription failed: ' + error.message);
+    wrappedError.status = error.status || 500;
+    wrappedError.provider = 'groq';
+    wrappedError.providerMessage = error?.error?.error?.message || error.message;
+    throw wrappedError;
   }
 }
 

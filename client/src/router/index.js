@@ -5,6 +5,7 @@ import FileUpload from '../views/FileUpload.vue';
 import SessionHistory from '../views/SessionHistory.vue';
 import PlannedUi from '../views/PlannedUi.vue';
 import AuthPage from '../views/AuthPage.vue';
+import { useAuth } from '../composables/useAuth';
 
 const routes = [
   {
@@ -48,6 +49,22 @@ const router = createRouter({
   scrollBehavior() {
     return { top: 0 };
   }
+});
+
+router.beforeEach((to) => {
+  const { ensureAuth, isAuthenticated } = useAuth();
+
+  return ensureAuth().then(() => {
+    if (to.meta.requiresAuth && !isAuthenticated.value) {
+      return { name: 'AuthPage' };
+    }
+
+    if (to.name === 'AuthPage' && isAuthenticated.value) {
+      return { name: 'PlannedUi' };
+    }
+
+    return true;
+  });
 });
 
 export default router;
