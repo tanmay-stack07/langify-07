@@ -66,15 +66,47 @@ export function useMediaRecorder() {
         };
 
         mediaRecorder.value.start();
-        stopTimer.value = window.setTimeout(() => {
-          if (mediaRecorder.value && mediaRecorder.value.state === 'recording') {
-            mediaRecorder.value.stop();
+
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(activeStream.value);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        let chunkStart = Date.now();
+        let silenceFrames = 0;
+        const SILENCE_FRAMES_NEEDED = 12; // ~800ms
+        const SILENCE_THRESHOLD = 10;
+        const MIN_CHUNK_MS = 1500;
+        const MAX_CHUNK_MS = 8000;
+
+        stopTimer.value = window.setInterval(() => {
+          if (!mediaRecorder.value || mediaRecorder.value.state !== 'recording') return;
+
+          analyser.getByteTimeDomainData(dataArray);
+          const rms = Math.sqrt(dataArray.reduce((s, v) => s + (v - 128) ** 2, 0) / dataArray.length);
+          const elapsed = Date.now() - chunkStart;
+
+          if (rms < SILENCE_THRESHOLD) silenceFrames++;
+          else silenceFrames = 0;
+
+          const naturalBoundary = silenceFrames >= SILENCE_FRAMES_NEEDED && elapsed >= MIN_CHUNK_MS;
+          const forcedBoundary = elapsed >= MAX_CHUNK_MS;
+
+          if (naturalBoundary || forcedBoundary) {
+            mediaRecorder.value.requestData(); // triggers ondataavailable
+            chunkStart = Date.now();
+            silenceFrames = 0;
           }
-        }, cycleDurationMs);
+        }, 60);
+
+        // Store reference to close context later
+        mediaRecorder.value._audioContext = audioContext;
       };
 
       startCycle();
-      console.log('Recording started with 4s chunk cycles.');
+      console.log('Recording started with smart pause detection.');
     } catch (err) {
       console.error('MediaRecorder Error:', err);
       throw err;
@@ -88,8 +120,13 @@ export function useMediaRecorder() {
       window.clearTimeout(stopTimer.value);
       stopTimer.value = null;
     }
-    if (mediaRecorder.value && mediaRecorder.value.state === 'recording') {
-      mediaRecorder.value.stop();
+    if (mediaRecorder.value) {
+      if (mediaRecorder.value.state === 'recording') {
+        mediaRecorder.value.stop();
+      }
+      if (mediaRecorder.value._audioContext) {
+        mediaRecorder.value._audioContext.close();
+      }
     }
     if (activeStream.value) {
       activeStream.value.getTracks().forEach(track => track.stop());

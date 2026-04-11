@@ -16,6 +16,22 @@ const languages = [
   'Japanese', 'Korean', 'Chinese', 'Arabic', 'Portuguese', 'Russian', 'Italian'
 ];
 
+const getToneColor = (tone) => {
+  const map = { 
+    frustrated: 'text-red-400 border-red-400/30 bg-red-400/10', 
+    excited: 'text-amber-400 border-amber-400/30 bg-amber-400/10', 
+    formal: 'text-blue-400 border-blue-400/30 bg-blue-400/10', 
+    urgent: 'text-rose-500 border-rose-500/30 bg-rose-500/10', 
+    sarcastic: 'text-purple-400 border-purple-400/30 bg-purple-400/10', 
+    neutral: 'text-gray-400 border-gray-400/30 bg-gray-400/10' 
+  };
+  return map[tone?.toLowerCase()] || map.neutral;
+};
+
+const applyAltTranslation = (u, altText) => {
+  u.translatedText = altText;
+};
+
 const handleStart = async () => {
   await createSession();
   await startRecording(async (blob) => {
@@ -114,10 +130,28 @@ const handleStopWithTimer = () => {
                 <div class="text-[9px] font-mono uppercase tracking-widest text-white/20">
                   {{ new Date(u.timestamp).toLocaleTimeString() }}
                 </div>
+                <div class="px-2 py-0.5 rounded-full border border-white/10 text-[9px] uppercase tracking-widest text-white/40">
+                  {{ u.detectedLanguage || 'Auto' }}
+                </div>
+                <div v-if="u.emotionalTone" 
+                     :class="['px-2 py-0.5 rounded-full border text-[9px] uppercase tracking-widest', getToneColor(u.emotionalTone)]">
+                  {{ u.emotionalTone }}
+                </div>
+                <div v-if="u.inferredIntent" class="text-[9px] italic text-cyan-400/70" title="Translation went beyond literal words">
+                  ✦ intent inferred
+                </div>
                 <div class="flex-1 h-px bg-white/[0.04]"></div>
               </div>
               <div class="text-sm font-light text-white/60 mb-1 leading-relaxed">{{ u.originalText }}</div>
               <div class="text-sm font-medium text-cyan-400 leading-relaxed">{{ u.translatedText }}</div>
+              
+              <div v-if="u.confidence < 0.72 && (u.alt_1 || u.alt_2)" class="mt-2 p-2 rounded bg-amber-500/10 border border-amber-500/20">
+                <div class="text-[10px] uppercase text-amber-500 mb-1 tracking-widest">Low Confidence - Alternatives</div>
+                <div class="flex gap-2">
+                  <button v-if="u.alt_1" @click="applyAltTranslation(u, u.alt_1)" class="text-xs px-2 py-1 bg-white/[0.05] hover:bg-white/[0.1] rounded text-white/70">{{ u.alt_1 }}</button>
+                  <button v-if="u.alt_2" @click="applyAltTranslation(u, u.alt_2)" class="text-xs px-2 py-1 bg-white/[0.05] hover:bg-white/[0.1] rounded text-white/70">{{ u.alt_2 }}</button>
+                </div>
+              </div>
             </div>
 
             <!-- Empty State -->
