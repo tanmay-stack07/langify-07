@@ -1,0 +1,529 @@
+
+LANGIFY — CLAUDE CODE AGENT PROMPT
+
+Dialect-Adaptive Intelligence (DAI) — Full Feature Implementation
+Drop this file as CLAUDE.md in the repo root — or paste Section 2 directly into the terminal.
+
+Field
+Value
+Target agent
+Claude Code (claude code terminal)
+Repo
+github.com/tanmay-stack07/langify-07
+Stack
+Node.js + Express + Vue.js + Supabase
+AI models
+Whisper-1 + GPT-4o
+Existing state
+Partial — some routes exist, need DAI layer added
+Coding style
+Do not ask — just code. Read existing files first, then implement.
+1. How to Use This Prompt
+Option A — CLAUDE.md (recommended)
+Save this entire prompt as CLAUDE.md in the root of your langify-07 repo. Claude Code reads this file automatically at the start of every session and uses it as persistent context. You never have to paste anything — just run claude in the terminal and it already knows what to build.
+
+# In repo root:
+cp /path/to/this/file.md CLAUDE.md
+git add CLAUDE.md
+git commit -m 'add claude code agent context'
+# Then just run:
+claude
+
+Option B — Paste directly into Claude Code terminal
+Copy everything from Section 2 onwards and paste it as your first message in the Claude Code terminal session. Claude Code will read it as context and begin implementing.
+
+2. The Agent Prompt — Start Here
+PASTE EVERYTHING BELOW THIS LINE INTO CLAUDE CODE
+
+2.1 Role & Mission
+Your identity as the coding agent
+You are a senior full-stack engineer implementing the Dialect-Adaptive Intelligence (DAI) feature layer for Langify — a Universal Live Speech Translation platform built on Node.js + Express + Vue.js + Supabase, using Whisper-1 and GPT-4o.
+
+The base translation pipeline (Whisper-1 transcription -> GPT-4o translation) is partially built. Your job is to extend it with a personalization layer that makes the system learn each user's dialect, vocabulary, and emotional speech patterns over time.
+
+IMPORTANT OPERATING RULES:
+■ 
+Always read existing files before editing. Run: ls, cat, or Read tool on any file before touching it.
+■ 
+Never break existing working routes. Extend — do not replace.
+■ 
+Never ask permission to proceed. Read the task, read the code, implement.
+■ 
+If a file does not exist yet, create it. If it exists, extend it.
+■ 
+Commit after each major step with a descriptive message.
+
+2.2 Existing Repo Structure
+The repo is at: github.com/tanmay-stack07/langify-07. Assume this structure exists (verify with ls before starting):
+
+langify-07/
+├── backend/
+│   ├── index.js              # Express app entry
+│   ├── routes/
+│   │   ├── transcribe.js     # POST /api/transcribe — Whisper file upload
+│   │   ├── translate.js      # POST /api/translate — live chunk translation  <-- EXTEND THIS
+│   │   └── session.js        # POST /api/session/end — Supabase batch save  <-- EXTEND THIS
+│   ├── lib/
+│   │   └── supabase.js       # Supabase client init
+│   └── .env                  # OPENAI_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+├── frontend/
+│   └── src/
+│       ├── composables/
+│       │   ├── useSession.ts          # Live session state  <-- EXTEND THIS
+│       │   └── useMediaRecorder.ts    # MediaRecorder + audio capture  <-- EXTEND THIS
+│       └── components/
+│           ├── UtteranceCard.vue      # Translation result card  <-- EXTEND THIS
+│           └── LiveTranslatePage.vue  # Main live translate UI  <-- EXTEND THIS
+└── CLAUDE.md                 # This file
+
+Before writing any code: run cat on translate.js, session.js, useSession.ts, and UtteranceCard.vue to understand their current implementation. Then implement the tasks below in order.
+
+2.3 Task List — Implement in This Exact Order
+Do each task fully before moving to the next. Commit after each.
+
+TASK 1 — Create Supabase schema migrations
+Create the file: backend/migrations/001_dai_schema.sql
+This file must contain the exact SQL below. After creating it, run it against Supabase using the Supabase CLI or paste it into the Supabase SQL editor (note this in a comment at the top of the file):
+
+-- backend/migrations/001_dai_schema.sql
+-- Run via: supabase db push  OR paste into Supabase SQL editor
+
+-- User profile: domain, speech patterns
+CREATE TABLE IF NOT EXISTS user_profiles (
+  id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id         TEXT NOT NULL UNIQUE,
+  domain          TEXT DEFAULT 'general',
+  speech_patterns JSONB DEFAULT '[]',
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Personal vocabulary map
+CREATE TABLE IF NOT EXISTS user_vocabulary (
+  id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  term        TEXT NOT NULL,
+  meaning     TEXT,
+  language    TEXT,
+  uses        INTEGER DEFAULT 1,
+  first_seen  TIMESTAMPTZ DEFAULT NOW(),
+  last_seen   TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, term)
+);
+
+-- Post-session AI summaries
+CREATE TABLE IF NOT EXISTS session_summaries (
+  id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  session_id      UUID REFERENCES sessions(id),
+  summary         TEXT,
+  main_topics     JSONB DEFAULT '[]',
+  action_items    JSONB DEFAULT '[]',
+  key_decisions   JSONB DEFAULT '[]',
+  domain          TEXT,
+  session_quality JSONB,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Extend utterances with DAI fields
+ALTER TABLE utterances ADD COLUMN IF NOT EXISTS emotional_tone TEXT;
+ALTER TABLE utterances ADD COLUMN IF NOT EXISTS inferred_intent BOOLEAN DEFAULT FALSE;
+ALTER TABLE utterances ADD COLUMN IF NOT EXISTS speaker_id INTEGER DEFAULT 0;
+ALTER TABLE utterances ADD COLUMN IF NOT EXISTS alt_1 TEXT;
+ALTER TABLE utterances ADD COLUMN IF NOT EXISTS alt_2 TEXT;
+
+Commit: git commit -m 'feat: add DAI schema migrations'
+
+TASK 2 — Create backend/lib/dai.js — the DAI context builder
+Create a new file: backend/lib/dai.js. This module is responsible for fetching the user's personal context from Supabase and building the system prompt and Whisper prompt for each translation call.
+
+// backend/lib/dai.js
+const { supabase } = require('./supabase');
+
+// ── MASTER SYSTEM PROMPT TEMPLATE ───────────────────────────────────
+const MASTER_PROMPT_TEMPLATE = `
+You are Langify's Dialect-Adaptive Translation Engine (DATE).
+
+CORE MISSION: Translate speech from ANY language into the user's chosen
+target language, understanding their personal accent, local vocabulary,
+code-switching patterns, and emotional intent.
+
+TRANSLATION RULES:
+1. NEVER ask the user what language they are speaking. Auto-detect always.
+2. Handle mixed-language speech (Hinglish, Marathi-English) naturally.
+3. If source equals target language, return original text unchanged.
+4. Preserve emotional register — frustration, excitement, formality.
+5. If speech is fragmented or trails off, infer the full intended meaning
+   from context and express it completely. Do NOT translate literally.
+
+PERSONAL CONTEXT:
+User vocabulary: {{VOCAB}}
+Speech patterns: {{PATTERNS}}
+Domain: {{DOMAIN}}
+Session topic: {{TOPIC}}
+Recent utterances:
+{{RECENT}}
+
+DIALECT RULES:
+- Treat all vocabulary map words as valid with their mapped meanings.
+- Unknown local/slang words: infer from context, flag as new_terms.
+- Code-switching (Hinglish, Marathi-English): detect dominant language
+  for metadata, translate entire utterance seamlessly.
+
+EMOTIONAL TONE:
+- Detect: neutral | frustrated | urgent | excited | sarcastic | formal
+- Reflect same register in target language via word choice.
+
+OUTPUT — respond ONLY with this JSON, no other text:
+{
+  "translatedText": "<translation>",
+  "detectedLanguage": "<ISO 639-1>",
+  "confidence": <0.0-1.0>,
+  "emotionalTone": "<tone>",
+  "inferredIntent": <true|false>,
+  "alt_1": "<alt if confidence < 0.72, else null>",
+  "alt_2": "<alt if confidence < 0.72, else null>",
+  "new_terms": [{ "term": "<word>", "inferred_meaning": "<meaning>" }]
+}
+`;
+
+// ── FETCH USER PROFILE + VOCABULARY FROM SUPABASE ───────────────────
+async function getUserContext(userId) {
+  const [profileRes, vocabRes] = await Promise.all([
+    supabase.from('user_profiles').select('*').eq('user_id', userId).single(),
+    supabase.from('user_vocabulary').select('*').eq('user_id', userId).order('uses', { ascending: false }).limit(200),
+  ]);
+
+  const profile = profileRes.data || { domain: 'general', speech_patterns: [] };
+  const vocab = {};
+  (vocabRes.data || []).forEach(v => { vocab[v.term] = { meaning: v.meaning, language: v.language }; });
+
+  return { profile, vocab };
+}
+
+// ── BUILD WHISPER PROMPT (injects known vocab for better transcription) ──
+function buildWhisperPrompt(vocab) {
+  const terms = Object.keys(vocab).slice(0, 50).join(', ');
+  if (!terms) return undefined;
+  return `User commonly uses: ${terms}.`;
+}
+
+// ── BUILD GPT-4O SYSTEM PROMPT ────────────────────────────────────────
+function buildSystemPrompt(profile, vocab, sessionState) {
+  const recentLines = (sessionState.utterances || [])
+    .slice(-3)
+    .map(u => `[${u.detectedLanguage}] ${u.originalText} => ${u.translatedText}`)
+    .join('\n') || 'none yet';
+
+  return MASTER_PROMPT_TEMPLATE
+    .replace('{{VOCAB}}', JSON.stringify(vocab))
+    .replace('{{PATTERNS}}', (profile.speech_patterns || []).join(', ') || 'none detected yet')
+    .replace('{{DOMAIN}}', profile.domain || 'general')
+    .replace('{{TOPIC}}', sessionState.inferredTopic || 'not yet determined')
+    .replace('{{RECENT}}', recentLines);
+}
+
+// ── UPSERT NEW TERMS INTO user_vocabulary ─────────────────────────────
+async function learnNewTerms(userId, newTerms) {
+  if (!newTerms || newTerms.length === 0) return;
+  for (const { term, inferred_meaning } of newTerms) {
+    await supabase.from('user_vocabulary').upsert({
+      user_id: userId, term, meaning: inferred_meaning,
+      last_seen: new Date().toISOString(),
+    }, { onConflict: 'user_id,term', ignoreDuplicates: false });
+    // Increment uses on conflict
+    await supabase.rpc('increment_vocab_uses', { p_user_id: userId, p_term: term });
+  }
+}
+
+// ── ENSURE USER PROFILE EXISTS ────────────────────────────────────────
+async function ensureUserProfile(userId) {
+  await supabase.from('user_profiles').upsert(
+    { user_id: userId, updated_at: new Date().toISOString() },
+    { onConflict: 'user_id', ignoreDuplicates: true }
+  );
+}
+
+module.exports = { getUserContext, buildWhisperPrompt, buildSystemPrompt, learnNewTerms, ensureUserProfile };
+
+Also add this Supabase RPC function to the migration file (add to 001_dai_schema.sql):
+
+CREATE OR REPLACE FUNCTION increment_vocab_uses(p_user_id TEXT, p_term TEXT)
+RETURNS void AS $$
+  UPDATE user_vocabulary SET uses = uses + 1, last_seen = NOW()
+  WHERE user_id = p_user_id AND term = p_term;
+$$ LANGUAGE sql;
+
+Commit: git commit -m 'feat: add DAI context builder lib'
+
+TASK 3 — Extend backend/routes/translate.js
+Read the existing translate.js first. Then extend it to use the DAI layer. The existing Whisper + GPT-4o call chain must be preserved — you are wrapping it with context, not replacing it.
+Changes required:
+■ 
+Import dai.js at the top
+■ 
+Accept userId in the request body (add it to the frontend call too)
+■ 
+Before the Whisper call: fetch user context via getUserContext(userId)
+■ 
+Pass buildWhisperPrompt(vocab) as the prompt param to Whisper
+■ 
+Pass buildSystemPrompt(...) as the system message to GPT-4o
+■ 
+Parse GPT-4o response as JSON (it now returns structured JSON, not plain text)
+■ 
+After translation: call learnNewTerms(userId, result.new_terms) — do not await
+■ 
+Return the full result object to the frontend (translatedText, detectedLanguage, confidence, emotionalTone, inferredIntent, alt_1, alt_2)
+
+// backend/routes/translate.js — KEY CHANGES (read existing file first)
+
+const { getUserContext, buildWhisperPrompt, buildSystemPrompt, learnNewTerms, ensureUserProfile } = require('../lib/dai');
+
+// In the route handler:
+const { audioChunk, targetLanguage, userId, sessionState } = req.body;
+
+// 1. Ensure profile exists
+await ensureUserProfile(userId);
+
+// 2. Fetch DAI context
+const { profile, vocab } = await getUserContext(userId);
+
+// 3. Whisper call — add vocab prompt
+const whisperRes = await openai.audio.transcriptions.create({
+  file: audioBlob,
+  model: 'whisper-1',
+  response_format: 'verbose_json',
+  // NO language param — auto-detect
+  prompt: buildWhisperPrompt(vocab),
+});
+
+// 4. GPT-4o call — full DAI system prompt
+const systemPrompt = buildSystemPrompt(profile, vocab, sessionState || {});
+const gptRes = await openai.chat.completions.create({
+  model: process.env.TRANSLATION_MODEL || 'gpt-4o',
+  temperature: 0.1,
+  max_tokens: 400,
+  messages: [
+    { role: 'system', content: systemPrompt },
+    { role: 'user',   content: `Translate to ${targetLanguage}: ${whisperRes.text}` },
+  ],
+});
+
+// 5. Parse structured JSON response
+const result = JSON.parse(gptRes.choices[0].message.content);
+
+// 6. Fire vocab learning async — do NOT await
+if (result.new_terms?.length > 0) {
+  learnNewTerms(userId, result.new_terms).catch(console.error);
+}
+
+// 7. Return to frontend
+res.json({
+  originalText:   whisperRes.text,
+  translatedText: result.translatedText,
+  detectedLanguage: result.detectedLanguage,
+  confidence:     result.confidence,
+  emotionalTone:  result.emotionalTone,
+  inferredIntent: result.inferredIntent,
+  alt_1:          result.alt_1,
+  alt_2:          result.alt_2,
+  timestamp:      new Date().toISOString(),
+});
+
+Commit: git commit -m 'feat: extend translate route with DAI context'
+
+TASK 4 — Extend backend/routes/session.js with post-session AI
+After the existing Supabase batch save, fire two async post-session jobs: session summarizer and vocabulary learning. Do not break the existing save logic — add to it.
+
+// backend/routes/session.js — ADD after existing batch save
+
+// After res.json({ success: true, sessionId }), add:
+runPostSessionAI(session.id, utterances, sessionMeta, req.body.userId).catch(console.error);
+
+// ── New function (add at bottom of file) ─────────────────────────────
+async function runPostSessionAI(sessionId, utterances, meta, userId) {
+  const summaryPrompt = `
+    Analyze this translation session and return ONLY JSON:
+    Target language: ${meta.targetLanguage}
+    Utterances: ${JSON.stringify(utterances.slice(0, 30))}
+    Return: { summary, main_topics, action_items, key_decisions, domain,
+    session_quality: { avg_confidence, dominant_source_language, code_switching_detected } }
+  `;
+
+  const res = await openai.chat.completions.create({
+    model: process.env.TRANSLATION_MODEL || 'gpt-4o',
+    temperature: 0.2, max_tokens: 600,
+    messages: [{ role: 'user', content: summaryPrompt }],
+  });
+
+  let summary;
+  try { summary = JSON.parse(res.choices[0].message.content); }
+  catch { return; } // silent fail — non-critical
+
+  await supabase.from('session_summaries').insert({ session_id: sessionId, ...summary });
+}
+
+Commit: git commit -m 'feat: add post-session AI summarizer'
+
+TASK 5 — Extend frontend useSession.ts composable
+Read the existing useSession.ts. Extend it to:
+■ 
+Generate or retrieve a userId (use localStorage key 'langify_user_id', generate UUID if not present)
+■ 
+Track sessionState: { utterances: [], inferredTopic: null } — update after each utterance
+■ 
+Pass userId and sessionState in the body of every POST /api/translate call
+■ 
+Store the full result object per utterance — including emotionalTone, inferredIntent, alt_1, alt_2
+■ 
+Infer session topic from the first 3 utterances: after 3rd utterance, set inferredTopic to the most repeated noun/topic word (simple heuristic is fine — or call a tiny GPT-4o mini call)
+
+// frontend/src/composables/useSession.ts — key additions
+
+import { v4 as uuidv4 } from 'uuid'; // npm install uuid
+
+// Get or create persistent userId
+const getUserId = () => {
+  let id = localStorage.getItem('langify_user_id');
+  if (!id) { id = uuidv4(); localStorage.setItem('langify_user_id', id); }
+  return id;
+};
+
+// In translate call — add to existing fetch body:
+body: JSON.stringify({
+  audioChunk,
+  targetLanguage,
+  userId: getUserId(),
+  sessionState: {
+    utterances: utterances.value.slice(-3), // last 3 for context
+    inferredTopic: inferredTopic.value,
+  },
+}),
+
+// Store extended result:
+utterances.value.unshift({
+  originalText:    data.originalText,
+  translatedText:  data.translatedText,
+  detectedLanguage: data.detectedLanguage,
+  confidence:      data.confidence,
+  emotionalTone:   data.emotionalTone,
+  inferredIntent:  data.inferredIntent,
+  alt_1:           data.alt_1,
+  alt_2:           data.alt_2,
+  timestamp:       data.timestamp,
+});
+
+Commit: git commit -m 'feat: extend useSession with DAI context tracking'
+
+TASK 6 — Extend UtteranceCard.vue with DAI UI elements
+Read the existing UtteranceCard.vue. Add the following UI elements without removing anything existing:
+
+New UI element
+Condition / behaviour
+EmotionalTonePill
+Always shown. Small pill next to DetectedLanguagePill. Colors: frustrated=coral, excited=amber, formal=blue, urgent=red, sarcastic=violet, neutral=gray.
+InferredIntentBadge
+Shown only when inferredIntent === true. Small italic label: '✦ intent inferred'. Tooltip: 'Translation went beyond literal words'.
+LowConfidenceWarning
+Shown when confidence < 0.72. Amber badge: 'Low confidence'. Expands to show alt_1 and alt_2 as clickable buttons.
+Alt translation buttons
+Shown inside LowConfidenceWarning expand. Two buttons: 'Alt 1: <text>' and 'Alt 2: <text>'. Clicking one replaces translatedText for that card.
+
+Keep the dark Jarvis palette (#13132A background, #E2E8F0 translated text) from the existing card. New pills follow the same pill style as DetectedLanguagePill.
+
+Commit: git commit -m 'feat: add DAI UI elements to UtteranceCard'
+
+TASK 7 — Smart Pause Detection in useMediaRecorder.ts
+Read the existing useMediaRecorder.ts. Replace the fixed 5-second chunk interval with silence-boundary detection. The existing MediaRecorder setup must still work — you are changing WHEN chunks are sent, not HOW they are captured.
+
+// frontend/src/composables/useMediaRecorder.ts — silence detection addition
+
+const SILENCE_THRESHOLD = 10;  // RMS below this = silence
+const MIN_CHUNK_MS = 1500;      // never send shorter than 1.5s
+const MAX_CHUNK_MS = 8000;      // always send by 8s regardless
+
+// In startSession():
+const audioContext = new AudioContext();
+const source = audioContext.createMediaStreamSource(stream);
+const analyser = audioContext.createAnalyser();
+analyser.fftSize = 512;
+source.connect(analyser);
+const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+let chunkStart = Date.now();
+let silenceFrames = 0;
+const SILENCE_FRAMES_NEEDED = 12; // ~800ms at 60fps
+
+const silenceLoop = setInterval(() => {
+  analyser.getByteTimeDomainData(dataArray);
+  const rms = Math.sqrt(dataArray.reduce((s, v) => s + (v - 128) ** 2, 0) / dataArray.length);
+  const elapsed = Date.now() - chunkStart;
+
+  if (rms < SILENCE_THRESHOLD) silenceFrames++;
+  else silenceFrames = 0;
+
+  const naturalBoundary = silenceFrames >= SILENCE_FRAMES_NEEDED && elapsed >= MIN_CHUNK_MS;
+  const forcedBoundary  = elapsed >= MAX_CHUNK_MS;
+
+  if (naturalBoundary || forcedBoundary) {
+    mediaRecorder.requestData(); // triggers ondataavailable
+    chunkStart = Date.now();
+    silenceFrames = 0;
+  }
+}, 60);
+
+// Clear interval in stopSession()
+clearInterval(silenceLoop);
+audioContext.close();
+
+Commit: git commit -m 'feat: smart pause detection replaces fixed 5s chunks'
+
+TASK 8 — Final verification checklist
+After all tasks are complete, run through this checklist before pushing:
+
+Verification checklist — run each test manually
+Start a live session. Speak rough Hinglish ('yaar solid tha ekdum'). Confirm translation arrives with emotionalTone field populated.
+Check the UtteranceCard shows the EmotionalTonePill with correct color.
+After 3 utterances, confirm sessionState.inferredTopic is set and being sent in subsequent translate calls.
+Force a low-confidence scenario (whisper quietly or speak very briefly). Confirm alt_1 and alt_2 appear on the card.
+End a session. Check Supabase session_summaries table has a new row.
+End two sessions. Check user_vocabulary table is accumulating terms.
+Start a third session. Confirm the vocabulary terms appear in the Whisper prompt (log it server-side).
+Run npm test or node scripts/test.js if tests exist. All existing tests must still pass.
+
+Final commit: git commit -m 'feat: DAI layer complete — all 8 tasks implemented'
+Push: git push origin main
+
+3. Environment Variable Additions
+Add these to .env if not already present:
+
+# Existing (should already be set):
+OPENAI_API_KEY=sk-...
+SUPABASE_URL=https://yourproject.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...
+
+# New additions for DAI:
+TRANSLATION_MODEL=gpt-4o        # swap to gpt-4o-mini during dev to save cost
+DAI_ENABLED=true                # feature flag — set false to disable DAI layer
+VOCAB_MAX_ENTRIES=200           # max vocabulary entries per user profile
+CONFIDENCE_THRESHOLD=0.72       # below this = show alt translations
+
+4. Quick Reference — Files Modified
+File
+What changes
+backend/migrations/001_dai_schema.sql
+NEW — Supabase schema for DAI tables + utterance extensions
+backend/lib/dai.js
+NEW — context builder, prompt templates, vocab learning
+backend/routes/translate.js
+EXTEND — add DAI context injection, structured JSON parse
+backend/routes/session.js
+EXTEND — add async post-session summarizer call
+frontend/src/composables/useSession.ts
+EXTEND — userId, sessionState, extended result storage
+frontend/src/composables/useMediaRecorder.ts
+EXTEND — smart pause detection replaces fixed interval
+frontend/src/components/UtteranceCard.vue
+EXTEND — EmotionalTonePill, InferredIntentBadge, alt translations
+
+— End of Agent Prompt — Save as CLAUDE.md and run: claude

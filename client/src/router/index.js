@@ -1,44 +1,38 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import LandingPage from '../views/LandingPage.vue';
-import LiveTranslate from '../views/LiveTranslate.vue';
-import FileUpload from '../views/FileUpload.vue';
-import SessionHistory from '../views/SessionHistory.vue';
-import PlannedUi from '../views/PlannedUi.vue';
-import AuthPage from '../views/AuthPage.vue';
 import { useAuth } from '../composables/useAuth';
 
 const routes = [
   {
     path: '/',
     name: 'Landing',
-    component: LandingPage,
+    component: () => import('../views/LandingPage.vue'),
     meta: { hideNavbar: true }
   },
   {
     path: '/translate',
     name: 'LiveTranslate',
-    component: LiveTranslate
+    component: () => import('../views/LiveTranslate.vue')
   },
   {
     path: '/upload',
     name: 'FileUpload',
-    component: FileUpload
+    component: () => import('../views/FileUpload.vue')
   },
   {
     path: '/history',
     name: 'SessionHistory',
-    component: SessionHistory
+    component: () => import('../views/SessionHistory.vue')
   },
   {
     path: '/planned-ui',
     name: 'PlannedUi',
-    component: PlannedUi,
+    component: () => import('../views/PlannedUi.vue'),
     meta: { hideNavbar: true }
   },
   {
     path: '/auth',
     name: 'AuthPage',
-    component: AuthPage,
+    component: () => import('../views/AuthPage.vue'),
     meta: { hideNavbar: true }
   }
 ];

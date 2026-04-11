@@ -1,0 +1,511 @@
+
+LANGIFY
+
+AI Feature Specification & Master Prompt Document
+Universal Live Speech Translation Platform
+
+Stack
+Node.js + Vue.js + Supabase
+AI Pipeline
+Whisper-1 + GPT-4o + DAI Layer
+Document Version
+1.0 — Dialect-Adaptive Intelligence Edition
+Repository
+github.com/tanmay-stack07/langify-07
+
+"Speak any language. Always get your language back. And get understood — even when words fail you."
+1. Overview — What Makes Langify Different
+Langify is not a translation wrapper. Every other browser-based translation tool does the same thing: call Whisper, call a translation API, show the output. Langify adds a third layer that no other final-year or commercial browser project has attempted:
+
+The Personalization Layer — a per-user AI that learns your dialect, vocabulary, accent patterns, and emotional register over time.
+
+The result: the longer you use Langify, the more accurately it understands you specifically — your local Nagpur slang, your code-switching rhythm between Hindi/Marathi/English, your tendency to trail off mid-sentence when you're thinking. It fills the gap between what you say and what you mean.
+
+Standard Whisper+GPT tool
+Langify with DAI
+Same accuracy for everyone
+Gets more accurate per user over time
+Fails on local slang
+Learns and stores your personal vocabulary
+Translates literal words
+Infers intent when speech is incomplete
+Ignores emotional tone
+Preserves frustration, urgency, excitement
+Starts fresh every session
+Carries context and vocabulary forward
+No feedback loop
+User corrections improve future sessions
+
+2. AI Pipeline Architecture — Extended
+The base PRD specifies a two-model pipeline: Whisper-1 for transcription and language detection, GPT-4o for translation. The DAI layer extends this to a three-stage pipeline with an async learning loop running after every session.
+
+Stage
+Model / Process
+What it does
+Stage 1
+Whisper-1 + vocab prompt
+Transcribe audio. Inject known vocabulary via prompt param to improve accuracy on personal terms.
+Stage 2
+GPT-4o + DAI context
+Translate with full personal context: vocabulary map, speech patterns, domain, recent utterances.
+Stage 3 (async)
+GPT-4o vocabulary loop
+After session: extract new terms, update user vocabulary map, store to Supabase.
+
+The context window for GPT-4o is intentionally maximized. Each utterance call sends not just the current audio chunk text but a full context packet, enabling the model to understand the user's speech holistically rather than treating each chunk in isolation.
+
+3. Context Window Design — Full Specification
+One of Langify's key differentiators is a carefully designed context window sent with every GPT-4o translation call. Rather than the minimal prompt in the base PRD ('Translate to English. Return only the translation.'), the enhanced prompt carries rich context that allows GPT-4o to behave as a personalized language model.
+
+3.1 Context Packet Structure
+Every GPT-4o call for the Live Translation feature sends the following structured context. All fields are populated from the user's Supabase profile and current session state:
+
+Context field
+What it contains
+System prompt (master)
+Full DAI prompt — see Section 4. Sent as system role.
+User vocabulary map
+JSON object: { term -> { meaning, language, uses } }. Up to 200 entries.
+Speech patterns
+Array of detected patterns: ['drops subject pronouns', 'mixes English tech nouns'].
+Domain context
+User's domain: medical, legal, academic, tech, personal.
+Session topic context
+Inferred topic from first 3 utterances of current session.
+Last 3 utterances
+Previous utterance original + translation pairs for continuity.
+Current utterance
+Whisper-1 transcription of the current audio chunk.
+Target language
+User's chosen output language.
+
+3.2 Token Budget
+The context window is managed to stay within GPT-4o's limits while maximizing personalization:
+
+Component
+Estimated tokens
+Master system prompt
+~400 tokens
+User vocabulary map (200 entries)
+~600 tokens
+Speech patterns + domain
+~80 tokens
+Session topic context
+~60 tokens
+Last 3 utterances (original + translation)
+~300 tokens
+Current utterance (5s chunk)
+~50–150 tokens
+TOTAL per call
+~1,490–1,590 tokens (well within 128K context)
+
+GPT-4o's 128,000-token context window means there is effectively no limit for the personal context — you could include the entire session history if needed. However, capping at the above budget keeps latency low and costs predictable.
+
+Developer Note: Context Caching Optimization
+The system prompt and vocabulary map are static within a session. Use OpenAI's prompt caching (prefix caching) to cache the system prompt + vocabulary map token prefix. Subsequent calls within the same session only pay for the variable portion (~500 tokens). This reduces cost by approximately 50% for active sessions.
+
+4. Master Prompt — Dialect-Adaptive Translation Engine
+This is the complete system prompt sent as the system role to GPT-4o on every Live Translation call. It is the core of the DAI feature. Template variables (in {{double braces}}) are populated at runtime from the user's Supabase profile and current session state.
+
+MASTER PROMPT — Copy this into backend/routes/translate.js as SYSTEM_PROMPT
+
+You are Langify's Dialect-Adaptive Translation Engine (DATE) — a highly intelligent,
+personalized multilingual AI assistant.
+
+CORE MISSION:
+Translate speech from ANY language into the user's chosen target language, understanding
+their personal accent, local vocabulary, code-switching patterns, and emotional intent.
+
+TRANSLATION RULES:
+1. NEVER ask the user what language they're speaking. Auto-detect always.
+2. Handle mixed-language speech (Hinglish, Marathi-English, code-switching) naturally.
+3. If source equals target language, return the original text unchanged.
+4. Preserve the emotional register — frustration, excitement, formality — in your output.
+5. If the speaker seems to trail off, fragment, or leave a thought incomplete, infer their
+   full intended meaning from context and express it completely in the target language.
+   Do NOT translate fragments literally.
+
+PERSONAL DIALECT ADAPTATION (inject user context below):
+User vocabulary map: {{USER_VOCABULARY_JSON}}
+User speech patterns: {{USER_SPEECH_PATTERNS}}
+User domain context: {{USER_DOMAIN}}
+Session topic context: {{SESSION_TOPIC_CONTEXT}}
+Recent utterances: {{LAST_3_UTTERANCES}}
+
+DIALECT HANDLING:
+- Treat all words in the user vocabulary map as valid terms with their mapped meanings.
+- If you encounter an unrecognized word that resembles a local term or slang, infer its
+  meaning from context and mark it as [new term: <word>] for the learning loop.
+- For Hinglish / Marathi-English code-switching, detect the dominant language for
+  metadata but translate the entire utterance into the target language seamlessly.
+
+EMOTIONAL TONE PRESERVATION:
+- Detect emotional register: neutral | frustrated | urgent | excited | sarcastic | formal
+- Reflect the same register in the target language using natural vocabulary choices.
+- If the tone is informal (yaar, bhai, na), translate informally.
+- If the tone is formal or professional, translate formally.
+
+CONFIDENCE AND ALTERNATIVES:
+- If you have LOW confidence in the translation (ambiguous source, unclear intent),
+  provide exactly 2 alternative translations as alt_1 and alt_2.
+- If you have HIGH confidence, return only the primary translation.
+
+VOCABULARY LEARNING FLAG:
+- If a source utterance contains any term that should be added to the user vocabulary map,
+  include a new_terms array in your response JSON.
+
+OUTPUT FORMAT — respond ONLY with this JSON, no other text:
+{
+  "translatedText": "<primary translation>",
+  "detectedLanguage": "<ISO 639-1 code>",
+  "confidence": <0.0 to 1.0>,
+  "emotionalTone": "<neutral|frustrated|urgent|excited|sarcastic|formal>",
+  "inferredIntent": <true if intent was inferred beyond literal words, else false>,
+  "alt_1": "<alternative translation if low confidence, else null>",
+  "alt_2": "<alternative translation if low confidence, else null>",
+  "new_terms": [{ "term": "<word>", "inferred_meaning": "<meaning>" }]
+}
+
+4.1 Backend Integration — translate.js
+In your Express route, build the context packet and inject into the master prompt before each GPT-4o call:
+
+// backend/routes/translate.js
+
+const buildSystemPrompt = (userProfile, session) => {
+  const vocabJson = JSON.stringify(userProfile.vocabulary || {});
+  const patterns = (userProfile.speechPatterns || []).join(', ');
+  const domain = userProfile.domain || 'general';
+  const topicCtx = session.inferredTopic || 'not yet determined';
+  const recentUtterances = (session.utterances || [])
+    .slice(-3)
+    .map(u => `[${u.detectedLanguage}] ${u.originalText} => ${u.translatedText}`)
+    .join('\n');
+
+  return MASTER_PROMPT
+    .replace('{{USER_VOCABULARY_JSON}}', vocabJson)
+    .replace('{{USER_SPEECH_PATTERNS}}', patterns)
+    .replace('{{USER_DOMAIN}}', domain)
+    .replace('{{SESSION_TOPIC_CONTEXT}}', topicCtx)
+    .replace('{{LAST_3_UTTERANCES}}', recentUtterances);
+};
+
+// GPT-4o call with full context
+const response = await openai.chat.completions.create({
+  model: process.env.TRANSLATION_MODEL || 'gpt-4o',
+  temperature: 0.1,
+  max_tokens: 400,
+  messages: [
+    { role: 'system', content: buildSystemPrompt(userProfile, session) },
+    { role: 'user',   content: transcription }
+  ]
+});
+
+const result = JSON.parse(response.choices[0].message.content);
+// result: { translatedText, detectedLanguage, confidence, emotionalTone,
+//           inferredIntent, alt_1, alt_2, new_terms }
+
+5. Session Summary Prompt
+Fired once at session end, after the batch save to Supabase. Generates a structured summary of the entire session including topics, action items, domain, and new vocabulary. This powers the AI Session Summarizer feature.
+
+SESSION SUMMARY PROMPT — Fire after POST /api/session/end
+
+You are analyzing a completed Langify translation session.
+
+Session metadata:
+  Target language: {{TARGET_LANGUAGE}}
+  Duration: {{DURATION_SECONDS}} seconds
+  Total utterances: {{UTTERANCE_COUNT}}
+  Speakers detected: {{SPEAKER_COUNT}}
+
+Utterances (in order):
+{{UTTERANCES_JSON}}
+
+Analyze the session and return ONLY this JSON, no other text:
+{
+  "summary": "<2-3 sentence summary of what was discussed>",
+  "main_topics": ["<topic 1>", "<topic 2>"],
+  "action_items": ["<action 1>"],
+  "key_decisions": ["<decision 1>"],
+  "domain": "<medical|legal|academic|professional|personal|technical>",
+  "new_vocabulary": [{ "term": "<term>", "meaning": "<meaning>", "language": "<lang>" }],
+  "session_quality": {
+    "avg_confidence": <0.0 to 1.0>,
+    "dominant_source_language": "<ISO code>",
+    "code_switching_detected": <true|false>
+  }
+}
+
+5.1 Integration Point
+In your /api/session/end handler, after the Supabase batch insert, fire this prompt asynchronously (do not await — return success to the frontend immediately, then process in background):
+
+// backend/routes/session.js — end handler
+
+app.post('/api/session/end', async (req, res) => {
+  const { utterances, sessionMeta } = req.body;
+
+  // 1. Batch save to Supabase (await this)
+  const { data: session } = await supabase
+    .from('sessions').insert(sessionMeta).select().single();
+  await supabase.from('utterances').insert(
+    utterances.map(u => ({ ...u, session_id: session.id }))
+  );
+
+  // 2. Return success immediately
+  res.json({ success: true, sessionId: session.id });
+
+  // 3. Fire summary + vocab learning async (no await)
+  runPostSessionAI(session.id, utterances, sessionMeta).catch(console.error);
+});
+
+async function runPostSessionAI(sessionId, utterances, meta) {
+  // A. Generate session summary
+  const summaryPrompt = SESSION_SUMMARY_PROMPT
+    .replace('{{TARGET_LANGUAGE}}', meta.targetLanguage)
+    .replace('{{DURATION_SECONDS}}', meta.durationSeconds)
+    .replace('{{UTTERANCE_COUNT}}', utterances.length)
+    .replace('{{UTTERANCES_JSON}}', JSON.stringify(utterances));
+
+  const summaryResp = await openai.chat.completions.create({
+    model: 'gpt-4o', temperature: 0.2, max_tokens: 600,
+    messages: [{ role: 'user', content: summaryPrompt }]
+  });
+  const summary = JSON.parse(summaryResp.choices[0].message.content);
+  await supabase.from('session_summaries').insert({ session_id: sessionId, ...summary });
+
+  // B. Run vocabulary learning loop (see Section 6)
+  await runVocabularyLearning(meta.userId, utterances);
+}
+
+6. Vocabulary Learning Prompt
+Extracts new vocabulary terms from a session and merges them into the user's persistent vocabulary map in Supabase. This is the core of the DAI learning loop — it is what makes the system get smarter over time.
+
+VOCABULARY LEARNING PROMPT — Runs async after every session
+
+You are Langify's vocabulary learning engine.
+
+Existing user vocabulary map: {{EXISTING_VOCAB_JSON}}
+New terms flagged this session: {{NEW_TERMS_JSON}}
+Session utterances for context: {{UTTERANCES_SAMPLE}}
+
+Task: Merge the new terms into the existing vocabulary map.
+- If a new term conflicts with an existing entry, keep the existing one.
+- If a term appears genuinely novel and context-confirmed, add it.
+- Limit total vocabulary map to 200 entries (drop least-used if over limit).
+
+Return ONLY updated JSON vocabulary map — no other text:
+{ "<term>": { "meaning": "<meaning>", "language": "<language>", "uses": <count> } }
+
+7. Complete AI Feature Specifications
+Feature 1 — Dialect-Adaptive Intelligence (DAI)  ★ Unique
+No competitor does this in-browser for real-time speech translation.
+
+DAI is the personalization layer that sits between the standard Whisper+GPT pipeline and the user. It consists of three sub-systems:
+
+Sub-system A — Whisper Vocabulary Injection
+Whisper-1 supports a prompt parameter that primes its transcription. Inject the user's known vocabulary terms so Whisper correctly transcribes local slang, personal shorthand, and code-switched words it would otherwise mangle.
+// When calling Whisper-1 for Live Translation chunks:
+const whisperResponse = await openai.audio.transcriptions.create({
+  file: audioBlob,
+  model: 'whisper-1',
+  response_format: 'verbose_json',
+  // NO language parameter — auto-detect always
+  prompt: buildWhisperPrompt(userVocabulary),
+});
+
+function buildWhisperPrompt(vocab) {
+  const terms = Object.keys(vocab).slice(0, 50).join(', ');
+  return `User commonly uses these terms: ${terms}.`;
+}
+
+Sub-system B — Intent Gap Filling
+When a user's speech is fragmented, emotionally charged, or trails off, GPT-4o infers the complete intended meaning from context and expresses it naturally. This is controlled by the inferredIntent flag in the output JSON — allowing the frontend to show a subtle indicator when translation went beyond literal words.
+
+Sub-system C — Async Learning Loop
+After every session, new terms flagged by the translation calls are merged into the user's vocabulary map. The system never relearns terms it already knows, and caps the vocabulary map at 200 entries to prevent prompt bloat.
+
+What DAI learns
+How it improves
+Local slang terms
+Transcription and translation accuracy for these terms improves.
+Speech patterns
+GPT-4o stops being confused by dropped pronouns, mid-sentence switches.
+Domain vocabulary
+Technical terms in the user's field are handled correctly.
+Emotional register
+Model calibrates to user's typical tone level (formal/informal).
+
+Feature 2 — Emotional Tone Preservation
+The translation output reflects the emotional register of the source speech, not just the semantic content. GPT-4o detects tone from word choice, punctuation patterns, and speech rhythm.
+
+Detected tone
+Example input (Hinglish)
+Translated output (English)
+Frustrated
+"yaar kya bakwaas hai ye seriously"
+"What on earth is this rubbish, seriously"
+Excited
+"bhai solid tha ekdum mast tha yaar"
+"That was absolutely brilliant, honestly amazing"
+Formal
+"kal meeting mein discuss karna hoga"
+"We will need to discuss this in tomorrow's meeting"
+Urgent
+"jaldi karo time nahi hai"
+"Hurry up, there is no time"
+Sarcastic
+"haan bilkul perfect hai sab kuch"
+"Oh yes, absolutely everything is perfect"
+
+The emotionalTone field in the output JSON can be displayed as a small pill tag on the UtteranceCard — a minor UI addition with high academic demonstration value.
+
+Feature 3 — Smart Pause Detection
+Replaces the fixed 5-second chunk interval with speech-boundary-aware chunking. Uses the Web Audio API's analyser node to detect silence, sending chunks only at natural speech boundaries.
+
+// In useMediaRecorder.ts composable
+const analyser = audioContext.createAnalyser();
+analyser.fftSize = 512;
+const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+function detectSilence() {
+  analyser.getByteTimeDomainData(dataArray);
+  const rms = Math.sqrt(dataArray.reduce((s, v) => s + (v-128)**2, 0) / dataArray.length);
+  return rms < SILENCE_THRESHOLD; // tune: ~8-12
+}
+
+// Send chunk at silence boundary OR at 8s max
+// Min chunk: 1.5s (avoid sending noise-only chunks)
+
+Feature 4 — Multi-Speaker Tracking
+Detects speaker changes from audio energy and frequency fingerprint shifts. Labels utterance cards by speaker — critical for meetings, lectures, and legal proceedings.
+
+Implementation: compute a simple spectral centroid fingerprint per 500ms audio window. When the fingerprint shifts significantly between consecutive windows, flag a speaker change. Assign Speaker A, B, C labels. Store speaker_id in the utterances table.
+
+Schema addition
+Details
+utterances.speaker_id
+Integer: 0, 1, 2 (Speaker A, B, C). Null if single speaker.
+sessions.speaker_count
+Count of distinct speakers detected this session.
+UtteranceCard UI
+Add SpeakerPill alongside DetectedLanguagePill.
+
+Feature 5 — Cross-Session Context Memory
+Every session adds to the user's persistent profile in Supabase. The profile accumulates vocabulary, speech patterns, domain, and frequency data across sessions. The more Langify is used, the more precisely it models the user.
+
+Supabase table
+Contents
+user_profiles
+user_id, domain, speech_patterns (JSON array), created_at, updated_at
+user_vocabulary
+user_id, term, meaning, language, uses (count), first_seen, last_seen
+session_summaries
+session_id, summary, main_topics, action_items, domain, session_quality
+
+Feature 6 — Live Confidence + Alternative Translations
+Whisper-1 verbose_json output already provides segment-level confidence. When confidence falls below 0.72, the master prompt instructs GPT-4o to provide two alternative translations. The frontend shows these as expandable options on the UtteranceCard, and user selection is stored as a correction.
+
+User corrections feed directly back into the vocabulary learning loop — if the user selects an alternative, that correction improves future translations for similar utterances.
+
+Feature 7 — AI Session Summarizer
+One GPT-4o call after session end generates a structured summary: key topics, action items, decisions, domain classification, and quality metrics. Rendered as a summary card at the top of the exported session document.
+
+Business value for target audiences
+■ 
+Medical professional: receives a clinical note summary ready for records
+■ 
+Student: receives lecture highlights with key vocabulary
+■ 
+Professional: receives meeting minutes with action items
+■ 
+Legal worker: receives session transcript with key statements flagged
+
+Feature 8 — Vocabulary Coach Mode
+An optional toggle on the session page. When active, GPT-4o adds a brief contextual note for one notable term per utterance. Notes are stored as a personal glossary in Supabase and exportable as a study document.
+
+In the master prompt, add one additional field to the output JSON when coach mode is active:
+"coach_note": {
+  "term": "<most interesting term from this utterance>",
+  "source_language": "<language>",
+  "meaning": "<brief contextual explanation>",
+  "example": "<example usage>"
+}
+
+8. Supabase Schema Extensions
+The base PRD schema (sessions + utterances tables) requires the following additions to support all DAI features:
+
+-- user_profiles table
+CREATE TABLE user_profiles (
+  id            UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id       TEXT NOT NULL UNIQUE,
+  domain        TEXT DEFAULT 'general',
+  speech_patterns JSONB DEFAULT '[]',
+  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- user_vocabulary table
+CREATE TABLE user_vocabulary (
+  id            UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  term          TEXT NOT NULL,
+  meaning       TEXT,
+  language      TEXT,
+  uses          INTEGER DEFAULT 1,
+  first_seen    TIMESTAMPTZ DEFAULT NOW(),
+  last_seen     TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, term)
+);
+
+-- session_summaries table
+CREATE TABLE session_summaries (
+  id            UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  session_id    UUID REFERENCES sessions(id),
+  summary       TEXT,
+  main_topics   JSONB DEFAULT '[]',
+  action_items  JSONB DEFAULT '[]',
+  key_decisions JSONB DEFAULT '[]',
+  domain        TEXT,
+  session_quality JSONB,
+  created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Extensions to utterances table
+ALTER TABLE utterances ADD COLUMN emotional_tone TEXT;
+ALTER TABLE utterances ADD COLUMN inferred_intent BOOLEAN DEFAULT FALSE;
+ALTER TABLE utterances ADD COLUMN speaker_id INTEGER DEFAULT 0;
+ALTER TABLE utterances ADD COLUMN alt_1 TEXT;
+ALTER TABLE utterances ADD COLUMN alt_2 TEXT;
+ALTER TABLE utterances ADD COLUMN coach_note JSONB;
+
+9. Academic & Portfolio Differentiation
+When presenting Langify to academic reviewers or technical interviewers, these are the talking points that set it apart from every other Whisper-based project:
+
+What to say in your project report — one paragraph summary
+"Langify implements a three-layer AI architecture: a base two-model pipeline (Whisper-1 + GPT-4o) for universal speech translation, augmented by a Dialect-Adaptive Intelligence layer that builds a personalized language model per user over time. The DAI layer uses Whisper's prompt injection for vocabulary-aware transcription, a structured context window for GPT-4o carrying the user's vocabulary map and speech patterns, and an async post-session learning loop that merges newly discovered terms into the user profile. This gives Langify a capability no other browser-based translation tool has: the more you use it, the better it understands your specific dialect, accent, and intent."
+
+Academic talking point
+Technical evidence
+Multi-model AI pipeline
+Whisper-1 (ASR) + GPT-4o (NLU + NLG) — two different model types in sequence
+Personalized AI
+Per-user vocabulary map stored in Supabase, injected into every call
+Context window engineering
+~1,500 token structured context packet per call, optimized for caching
+Active learning from feedback
+User corrections on low-confidence utterances improve future translations
+Indian language NLP
+Explicit Hinglish/Marathi-English code-switching handling in prompt design
+Production architecture
+Async post-session processing, rate limiting, server-side key management
+
+10. README Opening — Copy This
+The GitHub README should open with this exact differentiator statement, before any technical details:
+
+README Hero Text
+# Langify
+### "The only browser-based speech translator that learns your dialect."
+Speak Hindi, Marathi, Hinglish, or anything in between — Langify translates everything
+into your chosen language in real time, and gets more accurate every session.
+Built on Whisper-1 + GPT-4o + a per-user Dialect-Adaptive Intelligence layer.
+
+— End of Document —
