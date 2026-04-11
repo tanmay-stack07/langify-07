@@ -11,6 +11,16 @@ export function useSession() {
   const lastOriginal = ref('');
   const lastTranslated = ref('');
   const lastAt = ref(0);
+  const inferredTopic = ref(null);
+
+  const getUserId = () => {
+    let id = localStorage.getItem('langify_user_id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('langify_user_id', id);
+    }
+    return id;
+  };
 
   const normalizeText = (text) => (text || '').trim().replace(/\s+/g, ' ').toLowerCase();
   const languageMap = {
@@ -54,10 +64,15 @@ export function useSession() {
     formData.append('audio', audioBlob, `chunk.${ext}`);
     formData.append('sessionId', sessionId.value);
     formData.append('targetLanguage', targetLanguage.value);
+    formData.append('userId', getUserId());
+    formData.append('sessionState', JSON.stringify({
+      utterances: utterances.value.slice(-3),
+      inferredTopic: inferredTopic.value
+    }));
 
     try {
       const response = await axios.post(`${API_BASE}/api/translate`, formData);
-      const { originalText, translatedText, detectedLanguage, timestamp } = response.data;
+      const { originalText, translatedText, detectedLanguage, timestamp, confidence, emotionalTone, inferredIntent, alt_1, alt_2 } = response.data;
 
       const normalizedOriginal = normalizeText(originalText);
       const normalizedTranslated = normalizeText(translatedText);
@@ -86,8 +101,19 @@ export function useSession() {
         originalText,
         translatedText,
         detectedLanguage: detectedLabel,
+        confidence,
+        emotionalTone,
+        inferredIntent,
+        alt_1,
+        alt_2,
         timestamp
       });
+      
+      // Update inferredTopic after 3 utterances
+      if (!inferredTopic.value && utterances.value.length >= 3) {
+        // Simple heuristic for topic instead of another GPT call
+        inferredTopic.value = "General conversation";
+      }
       
       return response.data;
     } catch (err) {

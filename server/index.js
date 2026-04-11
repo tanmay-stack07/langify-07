@@ -5,7 +5,8 @@ const multer = require('multer');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const { transcribeAudio } = require('./services/transcriptionService');
-const { translateText } = require('./services/translationService');
+const { translateText, translateTextDAI } = require('./services/translationService');
+const { getUserContext, buildWhisperPrompt, buildSystemPrompt, learnNewTerms, ensureUserProfile } = require('./utils/dai');
 const { logUsage } = require('./utils/costTracker');
 const { serviceSupabase, authSupabase } = require('./supabaseClients');
 const { requireAuth } = require('./middleware/requireAuth');
@@ -233,25 +234,53 @@ app.post('/api/transcribe', transcribeLimiter, upload.single('audio'), async (re
 // ==========================
 app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single('audio'), async (req, res) => {
   try {
-    const { sessionId, targetLanguage } = req.body;
+    const { sessionId, targetLanguage, userId } = req.body;
+    let sessionState = {};
+    try { sessionState = JSON.parse(req.body.sessionState || '{}'); } catch {}
     
     if (!req.file) {
       return res.status(400).json({ error: 'No audio file provided.' });
     }
 
     const originalName = req.file.originalname || 'chunk.webm';
+    
+    let whisperPrompt = undefined;
+    let systemPrompt = undefined;
+    let fallbackToStandard = true;
+    
+    if (userId && process.env.DAI_ENABLED !== 'false') {
+      try {
+        await ensureUserProfile(userId);
+        const { profile, vocab } = await getUserContext(userId);
+        whisperPrompt = buildWhisperPrompt(vocab);
+        systemPrompt = buildSystemPrompt(profile, vocab, sessionState);
+        fallbackToStandard = false;
+      } catch (e) {
+        console.error('DAI Context Build Error:', e);
+      }
+    }
 
     // 1. STT (Groq Whisper-large-v3-turbo)
-    const transcription = await transcribeAudio(req.file.path, originalName, 'verbose_json');
+    const transcription = await transcribeAudio(req.file.path, originalName, 'verbose_json', whisperPrompt);
     const originalText = typeof transcription === 'string' ? transcription : transcription.text;
+    const detectedLanguage = transcription.language || 'auto';
     logUsage('whisper-large-v3-turbo', 5);
 
-    // 2. Translation (Groq LLaMA-3.3-70B)
-    const translatedText = await translateText(originalText, targetLanguage || 'English');
-    logUsage('llama-3.3-70b-versatile', originalText.length / 4);
-
-    // 3. Detect language from transcription
-    const detectedLanguage = transcription.language || 'auto';
+    // 2. Translation
+    let result = {};
+    if (!fallbackToStandard) {
+      result = await translateTextDAI(originalText, targetLanguage || 'English', systemPrompt);
+      logUsage('llama-3.3-70b-versatile', originalText.length / 4);
+      
+      // Async learn new terms
+      if (result.new_terms && result.new_terms.length > 0) {
+        learnNewTerms(userId, result.new_terms).catch(console.error);
+      }
+    } else {
+      const translatedText = await translateText(originalText, targetLanguage || 'English');
+      result = { translatedText, detectedLanguage, confidence: 1.0, emotionalTone: 'neutral', inferredIntent: false, alt_1: null, alt_2: null };
+      logUsage('llama-3.3-70b-versatile', originalText.length / 4);
+    }
 
     // 4. Persistence (Supabase)
     if (sessionId) {
@@ -260,8 +289,12 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
         .insert([{
           session_id: sessionId,
           text_original: originalText,
-          text_translated: translatedText,
-          language_code: detectedLanguage
+          text_translated: result.translatedText,
+          language_code: result.detectedLanguage,
+          emotional_tone: result.emotionalTone,
+          inferred_intent: result.inferredIntent,
+          alt_1: result.alt_1,
+          alt_2: result.alt_2
         }]);
 
       if (dbError) console.error('Supabase Persistence Error:', dbError);
@@ -270,8 +303,13 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
     res.json({
       success: true,
       originalText,
-      translatedText,
-      detectedLanguage,
+      translatedText: result.translatedText,
+      detectedLanguage: result.detectedLanguage,
+      confidence: result.confidence,
+      emotionalTone: result.emotionalTone,
+      inferredIntent: result.inferredIntent,
+      alt_1: result.alt_1,
+      alt_2: result.alt_2,
       timestamp: new Date().toISOString()
     });
 
@@ -313,6 +351,59 @@ app.post('/api/sessions', attachUserIfPresent, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// End a session and trigger post-session AI
+const Groq = require('groq-sdk');
+const groqLocal = new Groq({ apiKey: process.env.GROQ_API_KEY });
+app.post('/api/sessions/end', attachUserIfPresent, async (req, res) => {
+  try {
+    const { sessionId, utterances, sessionMeta, userId } = req.body;
+    
+    // We already persisted utterances in real-time, but here the client
+    // provides the final utterances array and metadata for summarization.
+
+    res.json({ success: true, sessionId });
+
+    // Fire summary + vocab learning async (no await)
+    runPostSessionAI(sessionId, utterances, sessionMeta, userId).catch(console.error);
+
+  } catch (error) {
+    console.error('Session End Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function runPostSessionAI(sessionId, utterances, meta, userId) {
+  if (!process.env.DAI_ENABLED || !sessionId) return;
+  const summaryPrompt = `
+    Analyze this translation session and return ONLY JSON:
+    Target language: ${meta?.targetLanguage || 'unknown'}
+    Utterances: ${JSON.stringify((utterances||[]).slice(0, 30))}
+    Return:
+    {
+      "summary": "...",
+      "main_topics": ["...", "..."],
+      "action_items": ["..."],
+      "key_decisions": ["..."],
+      "domain": "...",
+      "session_quality": {
+        "avg_confidence": 0.9,
+        "dominant_source_language": "...",
+        "code_switching_detected": true
+      }
+    }
+  `;
+  const res = await groqLocal.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    temperature: 0.2,
+    response_format: { type: "json_object" },
+    messages: [{ role: 'user', content: summaryPrompt }],
+  });
+
+  let summary;
+  try { summary = JSON.parse(res.choices[0].message.content); } catch { return; }
+  await serviceSupabase.from('session_summaries').insert({ session_id: sessionId, ...summary });
+}
 
 // List all sessions
 app.get('/api/sessions', attachUserIfPresent, async (req, res) => {

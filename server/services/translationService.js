@@ -40,4 +40,26 @@ async function translateText(text, targetLang = 'English') {
   }
 }
 
-module.exports = { translateText };
+/**
+ * Translates text with DAI context.
+ */
+async function translateTextDAI(text, targetLang, systemPrompt) {
+  try {
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Translate to ${targetLang}: ${text}` }
+      ],
+      temperature: 0.1,
+      response_format: { type: "json_object" }
+    });
+
+    return JSON.parse(response.choices[0].message.content.trim());
+  } catch (error) {
+    console.error('Groq DAI Translation Error:', error);
+    throw new Error('DAI Translation failed: ' + error.message);
+  }
+}
+
+module.exports = { translateText, translateTextDAI };
