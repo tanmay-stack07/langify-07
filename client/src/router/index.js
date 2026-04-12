@@ -11,7 +11,8 @@ const routes = [
   {
     path: '/translate',
     name: 'LiveTranslate',
-    component: () => import('../views/LiveTranslate.vue')
+    component: () => import('../views/LiveTranslate.vue'),
+    alias: '/live'
   },
   {
     path: '/upload',

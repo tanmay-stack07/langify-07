@@ -93,19 +93,19 @@ const activeCopy = computed(() => scenes[activeScene.value]);
 const orbMode = computed(() => ['idle', 'input', 'detect', 'morph', 'cards', 'cta'][activeScene.value] || 'idle');
 
 const setSceneRef = (el, index) => {
-  if (el) sceneRefs.value[index] = el;
+  if (el) sceneRefs.value[index] = el.$el || el;
 };
 
 const setStepRef = (el, index) => {
-  if (el) stepRefs.value[index] = el;
+  if (el) stepRefs.value[index] = el.$el || el;
 };
 
 const setCardRef = (el, index) => {
-  if (el) cardRefs.value[index] = el;
+  if (el) cardRefs.value[index] = el.$el || el;
 };
 
 const setFeatureRef = (el, index) => {
-  if (el) featureRefs.value[index] = el;
+  if (el) featureRefs.value[index] = el.$el || el;
 };
 
 const updateViewportMode = () => {

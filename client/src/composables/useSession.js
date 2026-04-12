@@ -50,7 +50,7 @@ export function useSession() {
   };
 
   const processAudioChunk = async (audioBlob) => {
-    if (!audioBlob || audioBlob.size < 2000) {
+    if (!audioBlob || audioBlob.size < 8000) {
       console.log('Skipping tiny audio blob.');
       return null;
     }
