@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue';
 import axios from 'axios';
+import { API_BASE } from '@/config/api.js';
 
 const file = ref(null);
 const fileName = ref('');

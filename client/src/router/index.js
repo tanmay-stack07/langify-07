@@ -35,6 +35,12 @@ const routes = [
     name: 'AuthPage',
     component: () => import('../views/AuthPage.vue'),
     meta: { hideNavbar: true }
+  },
+  {
+    path: '/meeting/:roomId',
+    name: 'MeetingMode',
+    component: () => import('../views/MeetingMode.vue'),
+    meta: { hideNavbar: true }
   }
 ];
 

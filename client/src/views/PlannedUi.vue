@@ -5,8 +5,7 @@ import { useRouter } from 'vue-router';
 import { useAuth } from '../composables/useAuth';
 import { useMediaRecorder } from '../composables/useMediaRecorder';
 import { useSession } from '../composables/useSession';
-
-const API_BASE = 'http://localhost:3000';
+import { API_BASE } from '@/config/api.js';
 
 const tabs = [
   { id: 'home', label: 'Home' },

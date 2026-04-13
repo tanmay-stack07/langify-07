@@ -3,6 +3,8 @@ const cors = require('cors');
 const morgan = require('morgan');
 const multer = require('multer');
 const fs = require('fs');
+const http = require('http');
+const { Server: SocketIO } = require('socket.io');
 const rateLimit = require('express-rate-limit');
 const { transcribeAudio } = require('./services/transcriptionService');
 const { translateText, translateTextDAI } = require('./services/translationService');
@@ -15,6 +17,7 @@ const { parseCookies, setSessionCookies, clearSessionCookies } = require('./util
 require('dotenv').config();
 
 const app = express();
+const httpServer = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 
 // Startup Guard
@@ -46,6 +49,89 @@ app.use(cors({
 }));
 app.use(morgan('dev'));
 app.use(express.json());
+
+// ==========================
+// Socket.IO — Meeting Mode (Phase 3)
+// ==========================
+const io = new SocketIO(httpServer, {
+  cors: {
+    origin: allowedOrigins,
+    credentials: true,
+  },
+});
+
+// Track active rooms: roomId → { members: Set<socketId>, hostId, targetLanguage }
+const meetingRooms = new Map();
+
+io.on('connection', (socket) => {
+  console.log(`[Meeting] Client connected: ${socket.id}`);
+
+  // Join a meeting room (roomId = sessionId from LiveTranslate)
+  socket.on('meeting:join', ({ roomId, displayName }) => {
+    socket.join(roomId);
+
+    if (!meetingRooms.has(roomId)) {
+      meetingRooms.set(roomId, {
+        members: new Set(),
+        hostId: socket.id,
+        createdAt: Date.now(),
+      });
+    }
+    const room = meetingRooms.get(roomId);
+    room.members.add(socket.id);
+
+    // Notify everyone in the room
+    io.to(roomId).emit('meeting:member-update', {
+      count: room.members.size,
+      members: Array.from(room.members),
+    });
+
+    console.log(`[Meeting] ${displayName || socket.id} joined room ${roomId} (${room.members.size} members)`);
+  });
+
+  // Leave a room
+  socket.on('meeting:leave', ({ roomId }) => {
+    socket.leave(roomId);
+    if (meetingRooms.has(roomId)) {
+      const room = meetingRooms.get(roomId);
+      room.members.delete(socket.id);
+      if (room.members.size === 0) {
+        meetingRooms.delete(roomId);
+        console.log(`[Meeting] Room ${roomId} closed (empty)`);
+      } else {
+        io.to(roomId).emit('meeting:member-update', {
+          count: room.members.size,
+          members: Array.from(room.members),
+        });
+      }
+    }
+  });
+
+  socket.on('disconnect', () => {
+    // Clean up from all rooms
+    for (const [roomId, room] of meetingRooms) {
+      if (room.members.has(socket.id)) {
+        room.members.delete(socket.id);
+        if (room.members.size === 0) {
+          meetingRooms.delete(roomId);
+        } else {
+          io.to(roomId).emit('meeting:member-update', {
+            count: room.members.size,
+            members: Array.from(room.members),
+          });
+        }
+      }
+    }
+    console.log(`[Meeting] Client disconnected: ${socket.id}`);
+  });
+});
+
+// Helper: broadcast an utterance to a meeting room
+function broadcastUtterance(sessionId, utterance) {
+  if (meetingRooms.has(sessionId)) {
+    io.to(sessionId).emit('meeting:utterance', utterance);
+  }
+}
 
 // Multer Setup for Audio Uploads
 const upload = multer({ 
@@ -300,7 +386,7 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
       if (dbError) console.error('Supabase Persistence Error:', dbError);
     }
 
-    res.json({
+    const responsePayload = {
       success: true,
       originalText,
       translatedText: result.translatedText,
@@ -311,7 +397,14 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
       alt_1: result.alt_1,
       alt_2: result.alt_2,
       timestamp: new Date().toISOString()
-    });
+    };
+
+    // Meeting Mode: broadcast this utterance to all room members
+    if (sessionId) {
+      broadcastUtterance(sessionId, responsePayload);
+    }
+
+    res.json(responsePayload);
 
   } catch (error) {
     try { if (req.file) fs.unlinkSync(req.file.path); } catch {}
@@ -459,11 +552,97 @@ app.get('/api/sessions/:sessionId/utterances', attachUserIfPresent, async (req, 
 });
 
 // ==========================
+// ElevenLabs HD Voice TTS (Phase 2)
+// ==========================
+// Proxy endpoint so the API key stays server-side.
+// POST /api/tts/elevenlabs  { text, languageCode }
+// Returns: audio/mpeg stream
+app.post('/api/tts/elevenlabs', translateLimiter, async (req, res) => {
+  try {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) {
+      return res.status(501).json({ error: 'ElevenLabs HD Voice is not configured. Set ELEVENLABS_API_KEY in .env.' });
+    }
+
+    const { text, languageCode } = req.body;
+    if (!text?.trim()) {
+      return res.status(400).json({ error: 'Missing `text` field.' });
+    }
+
+    const voiceId = process.env.ELEVENLABS_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb';
+    const model = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
+
+    // ElevenLabs uses 2-letter ISO codes (hi, ta, en), not BCP-47 (hi-IN, ta-IN)
+    // The client sends BCP-47, so we strip the region suffix
+    const ELEVENLABS_SUPPORTED = new Set([
+      'en','ja','zh','de','hi','fr','ko','pt','it','es','ru','id','nl','tr',
+      'fil','pl','sv','bg','ro','ar','cs','el','fi','hr','ms','sk','da',
+      'ta','uk','hu','no','vi'
+    ]);
+    let resolvedLang = null;
+    if (languageCode) {
+      const prefix = languageCode.split('-')[0].toLowerCase();
+      if (ELEVENLABS_SUPPORTED.has(prefix)) {
+        resolvedLang = prefix;
+      }
+    }
+
+    const elevenRes = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'Content-Type': 'application/json',
+          'Accept': 'audio/mpeg',
+        },
+        body: JSON.stringify({
+          text: text.slice(0, 5000), // ElevenLabs max ~5000 chars
+          model_id: model,
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+            style: 0.0,
+            use_speaker_boost: true,
+          },
+          ...(resolvedLang ? { language_code: resolvedLang } : {}),
+        }),
+      }
+    );
+
+    if (!elevenRes.ok) {
+      const errBody = await elevenRes.text();
+      console.error('ElevenLabs API Error:', elevenRes.status, errBody);
+      return res.status(elevenRes.status).json({ error: 'ElevenLabs API error', details: errBody });
+    }
+
+    // Stream audio back to client
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const reader = elevenRes.body.getReader();
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { res.end(); return; }
+        res.write(Buffer.from(value));
+      }
+    };
+    await pump();
+
+  } catch (error) {
+    console.error('ElevenLabs TTS Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================
 // Start Server
 // ==========================
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`\n🚀 Server running on http://localhost:${PORT}`);
   console.log(`✅ Startup Guard: All required API keys validated.`);
   console.log(`📡 Models: whisper-large-v3-turbo + llama-3.3-70b-versatile`);
+  console.log(`🔗 Meeting Mode: Socket.IO enabled`);
   console.log(`🛡  Rate Limits: Transcribe 10/15min | Translate 60/hr\n`);
 });

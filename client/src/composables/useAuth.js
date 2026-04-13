@@ -1,7 +1,6 @@
 import axios from 'axios';
 import { computed, ref } from 'vue';
-
-const API_BASE = 'http://localhost:3000';
+import { API_BASE } from '@/config/api.js';
 const currentUser = ref(null);
 const authReady = ref(false);
 const authLoading = ref(false);
