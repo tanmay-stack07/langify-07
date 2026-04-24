@@ -32,9 +32,7 @@
         <!-- Target language selector -->
         <div class="control-group">
           <label class="control-label">TARGET LANGUAGE</label>
-          <select v-model="targetLanguage" class="lang-select" :disabled="isActive">
-            <option v-for="lang in languages" :key="lang" :value="lang">{{ lang }}</option>
-          </select>
+          <AppSelect v-model="targetLanguage" :options="languages" :disabled="isActive" />
         </div>
 
         <!-- ── TTS: Auto-read toggle ─────────────────────────────────────
@@ -279,6 +277,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { ref, computed, watch, onUnmounted } from 'vue'
 import JarvisOverlay from '@/components/JarvisOverlay.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import { useSession } from '@/composables/useSession.js'
 import { useTTS } from '@/composables/useTTS.js'   // ── TTS
 
