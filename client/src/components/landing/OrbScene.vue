@@ -15,6 +15,7 @@ let renderer;
 let scene;
 let camera;
 let resizeObserver;
+let visibilityObserver;
 let animationFrame = 0;
 let orbGroup;
 let particles;
@@ -24,6 +25,8 @@ let clock;
 let energy = 0.35;
 let targetEnergy = 0.35;
 let THREERef = null;
+let isVisible = true;
+let isLowPerf = false;
 
 const modeEnergy = {
   idle: 0.35,
@@ -34,7 +37,7 @@ const modeEnergy = {
   cta: 0.48
 };
 
-const languageLabels = ['Hindi', 'Marathi', 'English', 'Spanish', 'Japanese', 'Arabic'];
+const languageLabels = ['Hindi', 'English', 'Spanish', 'Japanese', 'Arabic', 'French'];
 
 const createTextSprite = (label, color) => {
   const THREE = THREERef;
@@ -67,7 +70,11 @@ const createTextSprite = (label, color) => {
 };
 
 const setupFallbackDecision = () => {
-  useFallback.value = window.innerWidth < 768 || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const memory = navigator.deviceMemory ?? 8;
+  const cores = navigator.hardwareConcurrency ?? 8;
+  isLowPerf = memory <= 4 || cores <= 4;
+  useFallback.value = window.innerWidth < 768 || reducedMotion || isLowPerf;
 };
 
 const initScene = () => {
@@ -84,8 +91,8 @@ const initScene = () => {
   camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 100);
   camera.position.set(0, 0, 8.5);
 
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));
+  renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.35));
   renderer.setSize(width, height);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   host.appendChild(renderer.domElement);
@@ -99,7 +106,7 @@ const initScene = () => {
 
   orbGroup = new THREE.Group();
 
-  const orbGeometry = new THREE.IcosahedronGeometry(1.24, 12);
+  const orbGeometry = new THREE.IcosahedronGeometry(1.24, 4);
   const orbMaterial = new THREE.MeshPhysicalMaterial({
     color: 0x38bdf8,
     emissive: 0x144c67,
@@ -115,7 +122,7 @@ const initScene = () => {
   const coreMesh = new THREE.Mesh(orbGeometry, orbMaterial);
   orbGroup.add(coreMesh);
 
-  const wireGeometry = new THREE.TorusKnotGeometry(1.68, 0.045, 220, 18, 2, 3);
+  const wireGeometry = new THREE.TorusKnotGeometry(1.68, 0.045, 120, 12, 2, 3);
   const wireMaterial = new THREE.MeshBasicMaterial({
     color: 0x7fdcff,
     transparent: true,
@@ -139,7 +146,7 @@ const initScene = () => {
 
   scene.add(orbGroup);
 
-  const particleCount = 900;
+  const particleCount = 320;
   const positions = new Float32Array(particleCount * 3);
   for (let i = 0; i < particleCount; i += 1) {
     const radius = 2.8 + Math.random() * 3.6;
@@ -183,6 +190,11 @@ const initScene = () => {
   });
   resizeObserver.observe(host);
 
+  visibilityObserver = new IntersectionObserver(([entry]) => {
+    isVisible = entry?.isIntersecting ?? true;
+  }, { threshold: 0.08 });
+  visibilityObserver.observe(host);
+
   animate();
 };
 
@@ -190,26 +202,27 @@ const animate = () => {
   animationFrame = window.requestAnimationFrame(animate);
   const THREE = THREERef;
   if (!renderer || !scene || !camera || !orbGroup || !particles || !haloRing || !clock) return;
+  if (!isVisible) return;
 
   const elapsed = clock.getElapsedTime();
-  energy += (targetEnergy - energy) * 0.045;
+  energy += (targetEnergy - energy) * 0.032;
 
-  orbGroup.rotation.y += 0.0024 + energy * 0.0036;
-  orbGroup.rotation.x = Math.sin(elapsed * 0.4) * 0.14;
-  orbGroup.scale.setScalar(1 + Math.sin(elapsed * 1.8) * 0.025 + energy * 0.08);
+  orbGroup.rotation.y += 0.0018 + energy * 0.0024;
+  orbGroup.rotation.x = Math.sin(elapsed * 0.36) * 0.1;
+  orbGroup.scale.setScalar(1 + Math.sin(elapsed * 1.4) * 0.018 + energy * 0.05);
 
-  haloRing.rotation.z += 0.002 + energy * 0.002;
-  haloRing.scale.setScalar(1 + energy * 0.1);
+  haloRing.rotation.z += 0.0014 + energy * 0.0014;
+  haloRing.scale.setScalar(1 + energy * 0.06);
 
-  particles.rotation.y += 0.0009 + energy * 0.0018;
-  particles.rotation.x = Math.sin(elapsed * 0.16) * 0.25;
-  particles.material.opacity = 0.42 + energy * 0.6;
+  particles.rotation.y += 0.0005 + energy * 0.0011;
+  particles.rotation.x = Math.sin(elapsed * 0.12) * 0.14;
+  particles.material.opacity = 0.34 + energy * 0.34;
 
   labels.forEach((label, index) => {
     const drift = elapsed * (0.18 + index * 0.01);
-    label.position.y += Math.sin(drift + index) * 0.0018;
-    label.position.x += Math.cos(drift * 0.8 + index) * 0.0016;
-    label.material.opacity = 0.45 + Math.sin(elapsed * 0.8 + index) * 0.12 + energy * 0.28;
+    label.position.y += Math.sin(drift + index) * 0.0009;
+    label.position.x += Math.cos(drift * 0.8 + index) * 0.0008;
+    label.material.opacity = 0.42 + Math.sin(elapsed * 0.8 + index) * 0.08 + energy * 0.16;
   });
 
   renderer.render(scene, camera);
@@ -218,6 +231,7 @@ const animate = () => {
 const cleanup = () => {
   window.cancelAnimationFrame(animationFrame);
   resizeObserver?.disconnect();
+  visibilityObserver?.disconnect();
 
   labels.forEach((label) => {
     label.material.map?.dispose();
@@ -253,6 +267,7 @@ const cleanup = () => {
   particles = null;
   haloRing = null;
   clock = null;
+  visibilityObserver = null;
 };
 
 watch(

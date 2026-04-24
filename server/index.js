@@ -19,6 +19,7 @@ require('dotenv').config();
 const app = express();
 const httpServer = http.createServer(app);
 const PORT = process.env.PORT || 3000;
+const BASE_STT_PROMPT = 'Transcribe only the dominant nearby speaker. Ignore background chatter, TV audio, overlapping far voices, filler noise, and repeated hallucinated phrases. If speech is unclear, return only the clearly spoken words.';
 
 // Startup Guard
 const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'GROQ_API_KEY'];
@@ -278,6 +279,11 @@ app.get('/api/auth/me', async (req, res) => {
       }
     });
   } catch (error) {
+    const networkCode = error?.cause?.code || error?.code;
+    if (networkCode === 'ENOTFOUND' || networkCode === 'ECONNRESET' || networkCode === 'ETIMEDOUT') {
+      console.warn('Auth Me Warning: Supabase unreachable, treating request as signed-out.');
+      return res.status(401).json({ error: 'Auth service temporarily unavailable.' });
+    }
     console.error('Auth Me Error:', error);
     res.status(500).json({ error: error.message });
   }
@@ -303,15 +309,53 @@ app.post('/api/transcribe', transcribeLimiter, upload.single('audio'), async (re
     }
 
     const format = req.query.format || 'verbose_json';
+    const targetLanguage = req.body.targetLanguage?.trim();
     const originalName = req.file.originalname || 'audio.webm';
-    const transcription = await transcribeAudio(req.file.path, originalName, format);
+    const transcriptionVerbose = await transcribeAudio(req.file.path, originalName, 'verbose_json', BASE_STT_PROMPT);
+    const originalText = transcriptionVerbose?.text || '';
+    const detectedLanguage = transcriptionVerbose?.language || 'auto';
+    let transcription = transcriptionVerbose;
 
-    res.json({ success: true, transcription });
+    if (format === 'text') {
+      transcription = originalText;
+    } else if (format === 'json') {
+      transcription = { text: originalText, language: detectedLanguage };
+    }
+
+    let translatedText = null;
+
+    if (targetLanguage && originalText?.trim()) {
+      translatedText = await translateText(originalText, targetLanguage, detectedLanguage);
+      logUsage('llama-3.3-70b-versatile', originalText.length / 4);
+    }
+
+    console.log('Upload Translation:', {
+      detectedLanguage,
+      targetLanguage: targetLanguage || null,
+      originalPreview: originalText?.slice(0, 120),
+      translatedPreview: translatedText?.slice(0, 120) || null
+    });
+
+    res.json({
+      success: true,
+      transcription,
+      originalText,
+      translatedText,
+      detectedLanguage,
+      targetLanguage: targetLanguage || null
+    });
   } catch (error) {
     // Clean up file on error
-    try { if (req.file) fs.unlinkSync(req.file.path); } catch {}
+    try { if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {}
     console.error('Transcribe API Error:', error);
-    res.status(500).json({ error: error.message });
+    const status = error.status === 403 ? 403 : 500;
+    const errorCode = error.status === 403 ? 'AI_PROVIDER_ACCESS_DENIED' : 'TRANSCRIBE_FAILED';
+    res.status(status).json({
+      error: error.message,
+      errorCode,
+      provider: error.provider || 'unknown',
+      providerMessage: error.providerMessage || error.message
+    });
   }
 });
 
@@ -328,9 +372,19 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
       return res.status(400).json({ error: 'No audio file provided.' });
     }
 
+    if ((req.file.size || 0) < 12000) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(200).json({
+        success: false,
+        skipped: true,
+        errorCode: 'AUDIO_CHUNK_SKIPPED',
+        providerMessage: 'Audio chunk too short for transcription.'
+      });
+    }
+
     const originalName = req.file.originalname || 'chunk.webm';
     
-    let whisperPrompt = undefined;
+    let whisperPrompt = BASE_STT_PROMPT;
     let systemPrompt = undefined;
     let fallbackToStandard = true;
     
@@ -338,7 +392,8 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
       try {
         await ensureUserProfile(userId);
         const { profile, vocab } = await getUserContext(userId);
-        whisperPrompt = buildWhisperPrompt(vocab);
+        const vocabPrompt = buildWhisperPrompt(vocab);
+        whisperPrompt = `${BASE_STT_PROMPT} ${vocabPrompt}`.trim();
         systemPrompt = buildSystemPrompt(profile, vocab, sessionState);
         fallbackToStandard = false;
       } catch (e) {
@@ -407,8 +462,20 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
     res.json(responsePayload);
 
   } catch (error) {
-    try { if (req.file) fs.unlinkSync(req.file.path); } catch {}
+    try { if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {}
     console.error('Pipeline Error:', error);
+    const providerMessage = (error.providerMessage || error.message || '').toLowerCase();
+
+    if (providerMessage.includes('audio file is too short')) {
+      return res.status(200).json({
+        success: false,
+        skipped: true,
+        errorCode: 'AUDIO_CHUNK_SKIPPED',
+        provider: error.provider || 'groq',
+        providerMessage: error.providerMessage || error.message
+      });
+    }
+
     const status = error.status === 403 ? 403 : 500;
     const errorCode = error.status === 403 ? 'AI_PROVIDER_ACCESS_DENIED' : 'PIPELINE_FAILED';
 

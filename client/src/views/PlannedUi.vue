@@ -99,19 +99,39 @@ const uploadProgress = ref(0);
 const transcription = ref(null);
 const uploadError = ref('');
 const outputFormat = ref('text');
+const uploadOutputLanguage = ref('English');
 
 const sessions = ref([]);
 const isHistoryLoading = ref(false);
 const historyError = ref('');
 const expandedSession = ref(null);
 const sessionUtterances = ref({});
+const uploadLanguageMap = {
+  en: 'English',
+  hi: 'Hindi',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+  ta: 'Tamil',
+  ja: 'Japanese',
+  ar: 'Arabic'
+};
 
 const currentTab = computed(() => tabs.find((tab) => tab.id === activeTab.value));
 const currentUserLabel = computed(() => currentUser.value?.name || currentUser.value?.email || 'Signed in');
 const transcriptText = computed(() => {
   if (!transcription.value) return '';
-  if (typeof transcription.value === 'string') return transcription.value;
-  return transcription.value.text || JSON.stringify(transcription.value, null, 2);
+  if (transcription.value.translatedText) return transcription.value.translatedText;
+
+  const payload = transcription.value.transcription ?? transcription.value;
+  if (typeof payload === 'string') return payload;
+  return payload.text || JSON.stringify(payload, null, 2);
+});
+
+const uploadDetectedLanguage = computed(() => {
+  if (!transcription.value) return 'Auto-detect';
+  const code = transcription.value.detectedLanguage || transcription.value.transcription?.language || '';
+  return uploadLanguageMap[String(code).toLowerCase()] || code || 'Auto-detect';
 });
 
 watch(selectedOutputLanguage, (value) => {
@@ -195,6 +215,7 @@ const uploadFile = async () => {
 
   const formData = new FormData();
   formData.append('audio', selectedFile.value);
+  formData.append('targetLanguage', uploadOutputLanguage.value);
 
   isUploading.value = true;
   uploadProgress.value = 0;
@@ -209,9 +230,15 @@ const uploadFile = async () => {
       }
     });
 
-    transcription.value = response.data.transcription;
+    transcription.value = response.data;
   } catch (error) {
-    uploadError.value = error.response?.data?.error || 'Upload failed. Please try again.';
+    const errorCode = error.response?.data?.errorCode;
+    const providerMessage = error.response?.data?.providerMessage;
+    if (errorCode === 'AI_PROVIDER_ACCESS_DENIED') {
+      uploadError.value = `Speech-to-text provider blocked the request. ${providerMessage || 'Disable VPN / proxy or change network and try again.'}`;
+    } else {
+      uploadError.value = error.response?.data?.error || 'Upload failed. Please try again.';
+    }
   } finally {
     isUploading.value = false;
   }
@@ -474,7 +501,7 @@ onMounted(() => {
             <div class="planned-panel planned-panel--wide">
               <div class="planned-panel__header centered">
                 <h2>Upload Your File</h2>
-                <p>Send an audio file to the backend and get a transcript back right inside this page.</p>
+                <p>Upload audio, let Langify auto-detect the input language, and choose the output language you want to read.</p>
               </div>
 
               <div
@@ -509,6 +536,15 @@ onMounted(() => {
 
               <div class="planned-upload-controls">
                 <label class="planned-live-field planned-live-field--compact">
+                  <span>Output language</span>
+                  <select v-model="uploadOutputLanguage">
+                    <option v-for="lang in outputLanguages" :key="lang" :value="lang">
+                      {{ lang }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="planned-live-field planned-live-field--compact">
                   <span>Transcript format</span>
                   <select v-model="outputFormat">
                     <option v-for="format in transcriptFormats" :key="format.value" :value="format.value">
@@ -525,7 +561,7 @@ onMounted(() => {
                   @mousemove="handleReflectiveMove"
                   @mouseleave="resetReflectiveMove"
                 >
-                  {{ isUploading ? 'Processing...' : 'Transcribe File' }}
+                  {{ isUploading ? 'Processing...' : 'Transcribe + Translate' }}
                 </button>
               </div>
 
@@ -555,9 +591,22 @@ onMounted(() => {
 
               <div class="planned-transcript-output">
                 <p v-if="!transcription" class="planned-empty-copy">
-                  Choose a file and transcribe it to see the result here.
+                  Choose a file and Langify will auto-detect the input language and show the output in your selected language here.
                 </p>
-                <pre v-else>{{ transcriptText }}</pre>
+                <template v-else>
+                  <div class="planned-result-meta">
+                    <span>Detected input: {{ uploadDetectedLanguage }}</span>
+                    <span>Output: {{ uploadOutputLanguage }}</span>
+                  </div>
+                  <div v-if="transcription.originalText && transcription.translatedText" class="planned-result-block">
+                    <h3>Original transcript</h3>
+                    <p>{{ transcription.originalText }}</p>
+                  </div>
+                  <div v-if="transcription.translatedText" class="planned-result-block planned-result-block--translated">
+                    <h3>Translated output</h3>
+                  </div>
+                  <pre>{{ transcriptText }}</pre>
+                </template>
               </div>
             </div>
           </section>
@@ -1618,6 +1667,43 @@ onMounted(() => {
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.028);
+}
+
+.planned-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-bottom: 0.95rem;
+}
+
+.planned-result-meta span {
+  padding: 0.45rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.74rem;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.planned-result-block {
+  margin-bottom: 1rem;
+}
+
+.planned-result-block h3 {
+  margin-bottom: 0.4rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.54);
+}
+
+.planned-result-block p {
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1.7;
+}
+
+.planned-result-block--translated {
+  margin-bottom: 0.55rem;
 }
 
 .planned-transcript-output pre {

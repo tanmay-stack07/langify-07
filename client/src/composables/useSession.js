@@ -11,6 +11,7 @@ export function useSession() {
   const lastTranslated = ref('');
   const lastAt = ref(0);
   const inferredTopic = ref(null);
+  const recentOriginals = ref([]);
 
   const getUserId = () => {
     let id = localStorage.getItem('langify_user_id');
@@ -22,6 +23,32 @@ export function useSession() {
   };
 
   const normalizeText = (text) => (text || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const similarityRatio = (a, b) => {
+    const left = normalizeText(a);
+    const right = normalizeText(b);
+    if (!left || !right) return 0;
+    if (left === right) return 1;
+    const shorter = left.length < right.length ? left : right;
+    const longer = left.length < right.length ? right : left;
+    let overlap = 0;
+    for (const token of shorter.split(' ')) {
+      if (token && longer.includes(token)) overlap += token.length;
+    }
+    return overlap / Math.max(longer.length, 1);
+  };
+  const isRepetitiveGarbage = (text) => {
+    const normalized = normalizeText(text);
+    if (!normalized) return true;
+    if (normalized.length < 4) return true;
+    const repeatedPhrase = /^(.{4,40})\1{2,}$/i.test(normalized.replace(/\s+/g, ''));
+    if (repeatedPhrase) return true;
+    const tokens = normalized.split(' ').filter(Boolean);
+    if (tokens.length >= 6) {
+      const unique = new Set(tokens);
+      if (unique.size <= Math.ceil(tokens.length / 3)) return true;
+    }
+    return false;
+  };
   const languageMap = {
     en: 'English',
     hi: 'Hindi',
@@ -49,7 +76,7 @@ export function useSession() {
   };
 
   const processAudioChunk = async (audioBlob) => {
-    if (!audioBlob || audioBlob.size < 8000) {
+    if (!audioBlob || audioBlob.size < 12000) {
       console.log('Skipping tiny audio blob.');
       return null;
     }
@@ -71,6 +98,10 @@ export function useSession() {
 
     try {
       const response = await axios.post(`${API_BASE}/api/translate`, formData);
+      if (response.data?.skipped) {
+        return null;
+      }
+
       const { originalText, translatedText, detectedLanguage, timestamp, confidence, emotionalTone, inferredIntent, alt_1, alt_2 } = response.data;
 
       const normalizedOriginal = normalizeText(originalText);
@@ -85,13 +116,24 @@ export function useSession() {
         return null;
       }
 
+      if (isRepetitiveGarbage(originalText)) {
+        console.warn('Discarding low-quality utterance.', { originalText, translatedText });
+        return null;
+      }
+
       if (recentlySame && now - lastAt.value < 10000) {
+        return null;
+      }
+
+      const matchesRecentNoise = recentOriginals.value.some((entry) => similarityRatio(entry, originalText) > 0.96);
+      if (matchesRecentNoise && now - lastAt.value < 12000) {
         return null;
       }
 
       lastOriginal.value = normalizedOriginal;
       lastTranslated.value = normalizedTranslated;
       lastAt.value = now;
+      recentOriginals.value = [originalText, ...recentOriginals.value].slice(0, 5);
 
       const detectedLabel = languageMap[(detectedLanguage || '').toLowerCase()] || detectedLanguage || 'Auto';
 
@@ -117,8 +159,13 @@ export function useSession() {
       return response.data;
     } catch (err) {
       const providerMessage = err?.response?.data?.providerMessage || '';
+      const errorCode = err?.response?.data?.errorCode || '';
       if (providerMessage.toLowerCase().includes('audio file is too short')) {
         console.warn('Short audio chunk ignored.');
+        return null;
+      }
+      if (errorCode === 'AUDIO_CHUNK_SKIPPED') {
+        console.warn('Short audio chunk skipped by backend.');
         return null;
       }
       console.error('Translation processing error:', err.message);

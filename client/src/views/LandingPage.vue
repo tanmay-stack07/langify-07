@@ -23,10 +23,13 @@ const cardRefs = ref([]);
 
 const activeScene = ref(0);
 const isMobile = ref(false);
+const prefersReducedMotion = ref(false);
+const isLowPerf = ref(false);
 
 let ctx;
 let lenis;
 let tickerCallback;
+let pointerGlowTween;
 
 const scenes = [
   {
@@ -110,6 +113,10 @@ const setFeatureRef = (el, index) => {
 
 const updateViewportMode = () => {
   isMobile.value = window.innerWidth < 768;
+  prefersReducedMotion.value = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const memory = navigator.deviceMemory ?? 8;
+  const cores = navigator.hardwareConcurrency ?? 8;
+  isLowPerf.value = memory <= 4 || cores <= 4;
 };
 
 const scrollToExperience = () => {
@@ -117,18 +124,20 @@ const scrollToExperience = () => {
 };
 
 const moveCursorGlow = (event) => {
-  if (!cursorGlowEl.value) return;
+  if (!cursorGlowEl.value || isMobile.value || prefersReducedMotion.value || isLowPerf.value) return;
 
-  gsap.to(cursorGlowEl.value, {
+  pointerGlowTween?.kill();
+  pointerGlowTween = gsap.to(cursorGlowEl.value, {
     x: event.clientX - 180,
     y: event.clientY - 180,
-    duration: 0.45,
-    ease: 'power3.out'
+    duration: 0.2,
+    overwrite: 'auto',
+    ease: 'power2.out'
   });
 };
 
 const setupLenis = () => {
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || isMobile.value) return;
+  if (prefersReducedMotion.value || isMobile.value || isLowPerf.value) return;
 
   lenis = new Lenis({
     lerp: 0.085,
@@ -194,57 +203,59 @@ const setupAnimations = () => {
       .to(sceneRefs.value[4], { autoAlpha: 0, y: -36, duration: 0.75 }, '+=0.95')
       .fromTo(sceneRefs.value[5], { autoAlpha: 0, y: 72 }, { autoAlpha: 1, y: 0, duration: 1.1, ease: 'power3.out' }, '<0.1');
 
-    gsap.to('.hero-grid__scan', {
-      yPercent: 100,
-      duration: 4,
-      repeat: -1,
-      ease: 'none'
-    });
+    if (!prefersReducedMotion.value && !isLowPerf.value) {
+      gsap.to('.hero-grid__scan', {
+        yPercent: 100,
+        duration: 5.2,
+        repeat: -1,
+        ease: 'none'
+      });
 
-    gsap.to('.audio-wave span', {
-      height: (_, target) => 34 + ((Number(target.dataset.index) % 5) * 18),
-      duration: 1.1,
-      repeat: -1,
-      yoyo: true,
-      ease: 'sine.inOut',
-      stagger: {
-        each: 0.05,
-        from: 'center'
-      }
-    });
+      gsap.to('.audio-wave span', {
+        height: (_, target) => 34 + ((Number(target.dataset.index) % 5) * 18),
+        duration: 1.35,
+        repeat: -1,
+        yoyo: true,
+        ease: 'sine.inOut',
+        stagger: {
+          each: 0.06,
+          from: 'center'
+        }
+      });
 
-    gsap.to('.processing-word', {
-      y: (_, el) => (Number(el.dataset.offset) % 2 === 0 ? -14 : 16),
-      opacity: 1,
-      scale: 1.04,
-      duration: 1.6,
-      repeat: -1,
-      yoyo: true,
-      stagger: 0.12,
-      ease: 'sine.inOut'
-    });
+      gsap.to('.processing-word', {
+        y: (_, el) => (Number(el.dataset.offset) % 2 === 0 ? -10 : 12),
+        opacity: 1,
+        scale: 1.02,
+        duration: 1.9,
+        repeat: -1,
+        yoyo: true,
+        stagger: 0.16,
+        ease: 'sine.inOut'
+      });
 
-    gsap.to('.translation-morph__particle', {
-      x: (_, el) => Number(el.dataset.x),
-      y: (_, el) => Number(el.dataset.y),
-      scale: (_, el) => Number(el.dataset.scale),
-      opacity: 0.9,
-      duration: 1.3,
-      repeat: -1,
-      yoyo: true,
-      stagger: 0.08,
-      ease: 'sine.inOut'
-    });
+      gsap.to('.translation-morph__particle', {
+        x: (_, el) => Number(el.dataset.x),
+        y: (_, el) => Number(el.dataset.y),
+        scale: (_, el) => Number(el.dataset.scale),
+        opacity: 0.82,
+        duration: 1.55,
+        repeat: -1,
+        yoyo: true,
+        stagger: 0.1,
+        ease: 'sine.inOut'
+      });
 
-    gsap.to('.data-bars span', {
-      scaleY: (_, el) => 0.45 + (Number(el.dataset.bar) % 4) * 0.28,
-      opacity: 0.95,
-      duration: 1.2,
-      repeat: -1,
-      yoyo: true,
-      stagger: 0.08,
-      ease: 'power1.inOut'
-    });
+      gsap.to('.data-bars span', {
+        scaleY: (_, el) => 0.45 + (Number(el.dataset.bar) % 4) * 0.28,
+        opacity: 0.95,
+        duration: 1.4,
+        repeat: -1,
+        yoyo: true,
+        stagger: 0.1,
+        ease: 'power1.inOut'
+      });
+    }
 
     gsap.from('.hero-intro__copy > *', {
       autoAlpha: 0,
@@ -305,6 +316,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateViewportMode);
   window.removeEventListener('pointermove', moveCursorGlow);
+  pointerGlowTween?.kill();
   ctx?.revert();
   ScrollTrigger.getAll().forEach((trigger) => trigger.kill());
   if (tickerCallback) gsap.ticker.remove(tickerCallback);
@@ -314,7 +326,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="rootEl" class="langify-landing">
-    <div ref="cursorGlowEl" class="cursor-glow"></div>
+    <div
+      v-if="!isMobile && !prefersReducedMotion && !isLowPerf"
+      ref="cursorGlowEl"
+      class="cursor-glow"
+    ></div>
 
     <div class="hero-grid">
       <div class="hero-grid__mesh"></div>
