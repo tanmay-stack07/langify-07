@@ -1,6 +1,6 @@
 <script setup>
 import axios from 'axios';
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuth } from '../composables/useAuth';
 import { useMediaRecorder } from '../composables/useMediaRecorder';
@@ -75,6 +75,14 @@ const router = useRouter();
 const { currentUser, logout } = useAuth();
 const { isRecording, startRecording, stopRecording, selectedDeviceId, audioDevices, getAudioDevices, setMuted } = useMediaRecorder();
 const {
+  speak: speakWithTTS,
+  stop: stopTTS,
+  isSpeaking: isTtsSpeaking,
+  hdMode,
+  hdAvailable,
+  hdLoading
+} = useTTS();
+const {
   sessionId,
   utterances,
   isProcessing,
@@ -137,6 +145,11 @@ const uploadDetectedLanguage = computed(() => {
   if (!transcription.value) return 'Auto-detect';
   const code = transcription.value.detectedLanguage || transcription.value.transcription?.language || '';
   return uploadLanguageMap[String(code).toLowerCase()] || code || 'Auto-detect';
+});
+
+const uploadTranscriptToSpeak = computed(() => {
+  const translatedText = transcription.value?.translatedText;
+  return typeof translatedText === 'string' ? translatedText.trim() : '';
 });
 
 watch(selectedOutputLanguage, (value) => {
@@ -206,6 +219,7 @@ const handleDrop = (event) => {
 };
 
 const clearFile = () => {
+  stopUploadPlayback();
   selectedFile.value = null;
   fileName.value = '';
   fileSize.value = '';
@@ -225,6 +239,7 @@ const uploadFile = async () => {
   isUploading.value = true;
   uploadProgress.value = 0;
   uploadError.value = '';
+  stopUploadPlayback();
   transcription.value = null;
 
   try {
@@ -312,6 +327,22 @@ const speakTranslatedText = (text, originalText) => {
   // Routes through Google Cloud TTS (Neural2/WaveNet voices for all languages)
   // speakIfEnabled checks autoRead internally
   speakIfEnabled(text, null, selectedOutputLanguage.value);
+};
+
+const stopUploadPlayback = () => {
+  stopTTS();
+};
+
+const toggleUploadPlayback = () => {
+  const text = uploadTranscriptToSpeak.value;
+  if (!text) return;
+
+  if (isTtsSpeaking.value || hdLoading.value) {
+    stopUploadPlayback();
+    return;
+  }
+
+  speakWithTTS(text, undefined, uploadOutputLanguage.value);
 };
 
 const loadSessions = async () => {
@@ -540,20 +571,64 @@ onMounted(async () => {
               <div class="planned-upload-controls">
                 <label class="planned-live-field planned-live-field--compact">
                   <span>Output language</span>
-                  <select v-model="uploadOutputLanguage">
-                    <option v-for="lang in outputLanguages" :key="lang" :value="lang">
-                      {{ lang }}
-                    </option>
-                  </select>
+                  <AppSelect v-model="uploadOutputLanguage" :options="outputLanguages" />
+                  <!-- legacy select block removed in favor of AppSelect
+                    <button
+                      type="button"
+                      class="planned-select__trigger"
+                      @click="toggleUploadDropdown('language')"
+                    >
+                      <span>{{ uploadOutputLanguage }}</span>
+                      <span class="planned-select__chevron">⌄</span>
+                    </button>
+
+                    <transition name="planned-select-menu">
+                      <div v-if="isUploadLanguageOpen" class="planned-select__menu">
+                        <button
+                          v-for="lang in outputLanguages"
+                          :key="lang"
+                          type="button"
+                          class="planned-select__option"
+                          :class="{ 'planned-select__option--active': uploadOutputLanguage === lang }"
+                          @click="selectUploadLanguage(lang)"
+                        >
+                          {{ lang }}
+                        </button>
+                      </div>
+                    </transition>
+                  </div>
+                  -->
                 </label>
 
                 <label class="planned-live-field planned-live-field--compact">
                   <span>Transcript format</span>
-                  <select v-model="outputFormat">
-                    <option v-for="format in transcriptFormats" :key="format.value" :value="format.value">
-                      {{ format.label }}
-                    </option>
-                  </select>
+                  <AppSelect v-model="outputFormat" :options="transcriptFormats" />
+                  <!-- legacy select block removed in favor of AppSelect
+                    <button
+                      type="button"
+                      class="planned-select__trigger"
+                      @click="toggleUploadDropdown('format')"
+                    >
+                      <span>{{ transcriptFormats.find((format) => format.value === outputFormat)?.label || 'Plain Text' }}</span>
+                      <span class="planned-select__chevron">⌄</span>
+                    </button>
+
+                    <transition name="planned-select-menu">
+                      <div v-if="isUploadFormatOpen" class="planned-select__menu">
+                        <button
+                          v-for="format in transcriptFormats"
+                          :key="format.value"
+                          type="button"
+                          class="planned-select__option"
+                          :class="{ 'planned-select__option--active': outputFormat === format.value }"
+                          @click="selectUploadFormat(format.value)"
+                        >
+                          {{ format.label }}
+                        </button>
+                      </div>
+                    </transition>
+                  </div>
+                  -->
                 </label>
 
                 <button
@@ -606,7 +681,16 @@ onMounted(async () => {
                     <p>{{ transcription.originalText }}</p>
                   </div>
                   <div v-if="transcription.translatedText" class="planned-result-block planned-result-block--translated">
-                    <h3>Translated output</h3>
+                    <div class="planned-result-block__head">
+                      <h3>Translated output</h3>
+                      <button
+                        type="button"
+                        class="planned-result-listen"
+                        @click="toggleUploadPlayback"
+                      >
+                        {{ hdLoading ? 'Loading audio' : (isTtsSpeaking ? 'Stop audio' : (hdAvailable ? 'Listen audio' : 'Listen audio')) }}
+                      </button>
+                    </div>
                   </div>
                   <pre>{{ transcriptText }}</pre>
                 </template>
@@ -680,11 +764,7 @@ onMounted(async () => {
 
                   <label class="planned-live-field">
                     <span>Output language</span>
-                    <select v-model="selectedOutputLanguage">
-                      <option v-for="language in outputLanguages" :key="language" :value="language">
-                        {{ language }}
-                      </option>
-                    </select>
+                    <AppSelect v-model="selectedOutputLanguage" :options="outputLanguages" :disabled="isLiveSessionRunning" />
                   </label>
 
                   <label class="planned-live-field" style="margin-top: 1rem;">
@@ -1420,6 +1500,108 @@ onMounted(async () => {
   outline: none;
 }
 
+.planned-select {
+  position: relative;
+}
+
+.planned-select__trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
+    radial-gradient(circle at 18% 20%, rgba(124, 212, 255, 0.12), transparent 38%);
+  padding: 0.95rem 1rem;
+  color: rgba(245, 247, 255, 0.96);
+  text-align: left;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  transition: border-color 0.22s ease, transform 0.22s ease, box-shadow 0.22s ease, background 0.22s ease;
+}
+
+.planned-select__trigger:hover {
+  border-color: rgba(124, 212, 255, 0.2);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(124, 212, 255, 0.06);
+  transform: translateY(-1px);
+}
+
+.planned-select--open .planned-select__trigger {
+  border-color: rgba(124, 212, 255, 0.28);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(124, 212, 255, 0.08);
+}
+
+.planned-select__chevron {
+  font-size: 1rem;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.72);
+  transition: transform 0.22s ease;
+}
+
+.planned-select--open .planned-select__chevron {
+  transform: rotate(180deg);
+}
+
+.planned-select__menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 0.55rem);
+  z-index: 30;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background:
+    linear-gradient(180deg, rgba(18, 18, 31, 0.96), rgba(12, 11, 22, 0.94)),
+    radial-gradient(circle at top, rgba(124, 212, 255, 0.08), transparent 42%);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.34);
+}
+
+.planned-select__option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.82rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(240, 243, 255, 0.84);
+  text-align: left;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.planned-select__option:hover {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  transform: translateX(2px);
+}
+
+.planned-select__option--active {
+  background:
+    linear-gradient(90deg, rgba(124, 212, 255, 0.15), rgba(245, 193, 125, 0.12));
+  border-color: rgba(124, 212, 255, 0.12);
+  color: #fff;
+}
+
+.planned-select-menu-enter-active,
+.planned-select-menu-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.planned-select-menu-enter-from,
+.planned-select-menu-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.98);
+}
+
 .planned-live-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1710,6 +1892,13 @@ onMounted(async () => {
   color: rgba(255, 255, 255, 0.54);
 }
 
+.planned-result-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
 .planned-result-block p {
   color: rgba(255, 255, 255, 0.72);
   line-height: 1.7;
@@ -1717,6 +1906,27 @@ onMounted(async () => {
 
 .planned-result-block--translated {
   margin-bottom: 0.55rem;
+}
+
+.planned-result-listen {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(124, 212, 255, 0.18);
+  background: rgba(124, 212, 255, 0.08);
+  color: rgba(235, 245, 255, 0.9);
+  padding: 0.42rem 0.82rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: 0.2s ease;
+}
+
+.planned-result-listen:hover {
+  border-color: rgba(249, 206, 142, 0.28);
+  background: rgba(249, 206, 142, 0.1);
+  color: #fff;
 }
 
 .planned-transcript-output pre {

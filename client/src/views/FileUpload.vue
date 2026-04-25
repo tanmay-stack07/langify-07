@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue';
 import axios from 'axios';
+import AppSelect from '@/components/ui/AppSelect.vue';
 import { API_BASE } from '@/config/api.js';
 
 const file = ref(null);
@@ -172,13 +173,17 @@ const transcriptText = () => {
       <div v-if="file" class="mt-4 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <label class="text-[10px] uppercase tracking-widest text-white/30">Format</label>
-          <select v-model="outputFormat" 
-            class="px-3 py-1.5 text-xs rounded-lg border border-white/10 bg-white/[0.05] text-white focus:outline-none focus:border-cyan-500/50"
-            style="-webkit-appearance: none;">
-            <option value="verbose_json" class="bg-[#1a1a1a]">Verbose JSON</option>
-            <option value="json" class="bg-[#1a1a1a]">JSON</option>
-            <option value="text" class="bg-[#1a1a1a]">Plain Text</option>
-          </select>
+          <div class="min-w-[180px]">
+            <AppSelect
+              v-model="outputFormat"
+              :options="[
+                { label: 'Verbose JSON', value: 'verbose_json' },
+                { label: 'JSON', value: 'json' },
+                { label: 'Plain Text', value: 'text' }
+              ]"
+              size="sm"
+            />
+          </div>
         </div>
         
         <button @click="uploadFile" :disabled="isUploading"

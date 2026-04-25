@@ -1,0 +1,4 @@
+cd venv
+cd langify-07
+cd server
+cd client
