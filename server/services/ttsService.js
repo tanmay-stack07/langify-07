@@ -178,7 +178,7 @@ function resolveCode(langCodeOrName) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Cloud TTS — synthesize via REST API (no extra npm package needed)
 // ─────────────────────────────────────────────────────────────────────────────
-async function synthesizeWithGoogle(text, langCodeOrName) {
+async function synthesizeWithGoogle(text, langCodeOrName, resStream) {
   const apiKey = process.env.GOOGLE_TTS_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not set');
 
@@ -208,7 +208,13 @@ async function synthesizeWithGoogle(text, langCodeOrName) {
   const audioContent = response.data?.audioContent;
   if (!audioContent) throw new Error('Google TTS: no audio content returned');
 
-  return Buffer.from(audioContent, 'base64');
+  const buffer = Buffer.from(audioContent, 'base64');
+  if (resStream) {
+    resStream.write(buffer);
+    resStream.end();
+    return true;
+  }
+  return buffer;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,11 +233,25 @@ function resolveEdgeVoice(langCodeOrName) {
   return EDGE_VOICE_MAP['en'];
 }
 
-async function synthesizeWithEdge(text, langCodeOrName) {
+async function synthesizeWithEdge(text, langCodeOrName, resStream) {
   const voiceName = resolveEdgeVoice(langCodeOrName);
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voiceName, 'audio-24khz-96kbitrate-mono-mp3');
   const readable = tts.toStream(text.slice(0, 5000));
+
+  if (resStream) {
+    return new Promise((resolve, reject) => {
+      readable.on('data', (chunk) => {
+        if (chunk?.audio) resStream.write(chunk.audio);
+        else if (Buffer.isBuffer(chunk)) resStream.write(chunk);
+      });
+      readable.on('end', () => {
+        resStream.end();
+        resolve(true);
+      });
+      readable.on('error', (err) => reject(err));
+    });
+  }
 
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -254,16 +274,16 @@ async function synthesizeWithEdge(text, langCodeOrName) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Main export — Google first, Edge fallback (signature unchanged)
 // ─────────────────────────────────────────────────────────────────────────────
-async function synthesize(text, languageCodeOrName) {
+async function synthesize(text, languageCodeOrName, resStream) {
   if (!text?.trim()) throw new Error('TTS: empty text');
 
   // Try Google Cloud TTS first (if key is present)
   if (process.env.GOOGLE_TTS_API_KEY) {
     try {
       const t0 = Date.now();
-      const buffer = await synthesizeWithGoogle(text, languageCodeOrName);
-      console.log(`[TTS][Google] ✅ ${languageCodeOrName} — ${Date.now() - t0}ms, ${buffer.length} bytes`);
-      return buffer;
+      const result = await synthesizeWithGoogle(text, languageCodeOrName, resStream);
+      console.log(`[TTS][Google] ✅ ${languageCodeOrName} — ${Date.now() - t0}ms`);
+      return result;
     } catch (err) {
       console.warn(`[TTS][Google] ⚠ Failed (${err.message}) — falling back to Edge TTS`);
     }
@@ -271,9 +291,9 @@ async function synthesize(text, languageCodeOrName) {
 
   // Edge TTS fallback
   const t0 = Date.now();
-  const buffer = await synthesizeWithEdge(text, languageCodeOrName);
-  console.log(`[TTS][Edge] ✅ ${languageCodeOrName} — ${Date.now() - t0}ms, ${buffer.length} bytes`);
-  return buffer;
+  const result = await synthesizeWithEdge(text, languageCodeOrName, resStream);
+  console.log(`[TTS][Edge] ✅ ${languageCodeOrName} — ${Date.now() - t0}ms`);
+  return result;
 }
 
 function resolveVoice(langCodeOrName) {

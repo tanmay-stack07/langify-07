@@ -231,43 +231,23 @@ export function useTTS() {
     isSpeaking.value = true
 
     try {
-      const res = await fetch(`${API_BASE}/api/tts/elevenlabs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          languageCode: bcp47,
-        }),
-      })
-
-      if (!res.ok) {
-        console.warn('[useTTS] HD Voice failed, falling back to standard:', res.status)
-        hdLoading.value = false
-        speakStandard(text, bcp47)
-        return
-      }
-
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-
-      // Stop any previous HD audio
       if (currentAudio) {
         currentAudio.pause()
         currentAudio = null
       }
 
+      const url = `${API_BASE}/api/tts/elevenlabs?text=${encodeURIComponent(text)}&languageCode=${encodeURIComponent(bcp47)}`
+      
       currentAudio = new Audio(url)
       currentAudio.onplay = () => { hdLoading.value = false }
       currentAudio.onended = () => {
         isSpeaking.value = false
-        URL.revokeObjectURL(url)
         currentAudio = null
       }
       currentAudio.onerror = () => {
         console.warn('[useTTS] HD audio playback error, falling back to standard')
         isSpeaking.value = false
         hdLoading.value = false
-        URL.revokeObjectURL(url)
         currentAudio = null
         speakStandard(text, bcp47)
       }
@@ -323,29 +303,19 @@ export function useTTS() {
     isSpeaking.value = true
 
     try {
-      const res = await fetch(`${API_BASE}/api/tts/google`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, language }),
-      })
-
-      if (!res.ok) throw new Error(`Server TTS failed: ${res.status}`)
-
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-
       if (currentAudio) { currentAudio.pause(); currentAudio = null }
 
+      // Natively stream the audio using the GET endpoint
+      const url = `${API_BASE}/api/tts/google?text=${encodeURIComponent(text)}&language=${encodeURIComponent(language)}`;
       currentAudio = new Audio(url)
+      
       currentAudio.onended = () => {
         isSpeaking.value = false
-        URL.revokeObjectURL(url)
         currentAudio = null
       }
       currentAudio.onerror = () => {
         console.warn('[useTTS] Google audio playback error, falling back to Web Speech')
         isSpeaking.value = false
-        URL.revokeObjectURL(url)
         currentAudio = null
         speakStandard(text, LANG_MAP[language] || language || 'en-US')
       }

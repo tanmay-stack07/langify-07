@@ -7,6 +7,7 @@ import { useMediaRecorder } from '../composables/useMediaRecorder';
 import { useSession } from '../composables/useSession';
 import { useTTS } from '../composables/useTTS';
 import { API_BASE } from '@/config/api.js';
+import AppSelect from '../components/ui/AppSelect.vue';
 
 const tabs = [
   { id: 'home', label: 'Home' },
@@ -80,8 +81,14 @@ const {
   isSpeaking: isTtsSpeaking,
   hdMode,
   hdAvailable,
-  hdLoading
+  hdLoading,
+  speak,
+  speakIfEnabled,
+  autoRead,
+  toggleAutoRead,
+  isSpeaking
 } = useTTS();
+
 const {
   sessionId,
   utterances,
@@ -90,8 +97,6 @@ const {
   createSession,
   processAudioChunk
 } = useSession();
-
-const { speak, speakIfEnabled, autoRead, toggleAutoRead, stop: stopTTS, isSpeaking } = useTTS();
 
 // Enable voice output by default (autoRead starts false in the composable)
 autoRead.value = true;
@@ -769,12 +774,10 @@ onMounted(async () => {
 
                   <label class="planned-live-field" style="margin-top: 1rem;">
                     <span>Microphone Input (for Earbuds)</span>
-                    <select v-model="selectedDeviceId">
-                      <option value="">Default Microphone</option>
-                      <option v-for="device in audioDevices" :key="device.deviceId" :value="device.deviceId">
-                        {{ device.label || 'Unknown Microphone' }}
-                      </option>
-                    </select>
+                    <AppSelect 
+                      v-model="selectedDeviceId" 
+                      :options="[{value: '', label: 'Default Microphone'}, ...audioDevices.map(d => ({ value: d.deviceId, label: d.label || 'Unknown Microphone' }))]" 
+                    />
                   </label>
 
                   <label class="planned-live-toggle">

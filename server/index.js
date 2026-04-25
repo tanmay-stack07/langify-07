@@ -420,9 +420,9 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
     }
 
     // AGGRESSIVE FILTERING:
-    // 1. High no_speech_prob (> 0.35)
-    // 2. Very low avg_logprob (< -1.0) - indicates Whisper is guessing wildly
-    if (maxNoSpeechProb > 0.35 || minAvgLogProb < -1.0) {
+    // 1. High no_speech_prob (> 0.6)
+    // 2. Very low avg_logprob (< -2.5) - indicates Whisper is guessing wildly
+    if (maxNoSpeechProb > 0.6 || minAvgLogProb < -2.5) {
       console.log(`[Hallucination Filter] Dropped. Prob: ${maxNoSpeechProb.toFixed(2)}, LogProb: ${minAvgLogProb.toFixed(2)}. Text: "${originalText}"`);
       return res.status(200).json({
         success: false,
@@ -450,6 +450,7 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
       'hey.', 'hey', 'hey hey', 'hey hey hey',
       'stellaori', 'stellaori.', 'maggokay', 'maggokay.', 'maggie okay',
       'khnk', 'khenk', 'khink',
+      'है', 'है.', 'हैं', 'हैं.', 'क्या है', 'क्या है?', 'झाल', 'झाल!', 'नमस्कार', 'धन्यवाद', 'नमस्कार.', 'धन्यवाद.'
     ]);
     const isRepetitive = (text) => {
       const t = text.toLowerCase().replace(/[^\p{L}\s]/gu, '').trim();
@@ -800,12 +801,83 @@ app.post('/api/tts/elevenlabs', translateLimiter, async (req, res) => {
   }
 });
 
+// GET /api/tts/elevenlabs?text=...&languageCode=...
+app.get('/api/tts/elevenlabs', async (req, res) => {
+  try {
+    const { text, languageCode } = req.query;
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+
+    if (!apiKey) {
+      return res.status(501).json({ error: 'ElevenLabs API key not configured' });
+    }
+    if (!text?.trim()) {
+      return res.status(400).json({ error: 'Missing `text` query param' });
+    }
+
+    const isEnglish = !languageCode || languageCode.startsWith('en');
+    const voiceId = isEnglish ? 'EXAVITQu4vr4xnSDxMaL' : 'EXAVITQu4vr4xnSDxMaL';
+    const model = isEnglish ? 'eleven_turbo_v2' : 'eleven_multilingual_v2';
+
+    let resolvedLang = undefined;
+    if (!isEnglish) {
+      const prefix = languageCode.split('-')[0].toLowerCase();
+      if (ELEVENLABS_SUPPORTED.has(prefix)) {
+        resolvedLang = prefix;
+      }
+    }
+
+    const elevenRes = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'Content-Type': 'application/json',
+          'Accept': 'audio/mpeg',
+        },
+        body: JSON.stringify({
+          text: text.slice(0, 5000),
+          model_id: model,
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+            style: 0.0,
+            use_speaker_boost: true,
+          },
+          ...(resolvedLang ? { language_code: resolvedLang } : {}),
+        }),
+      }
+    );
+
+    if (!elevenRes.ok) {
+      const errBody = await elevenRes.text();
+      console.error('ElevenLabs API Error:', elevenRes.status, errBody);
+      return res.status(elevenRes.status).json({ error: 'ElevenLabs API error', details: errBody });
+    }
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const reader = elevenRes.body.getReader();
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { res.end(); return; }
+        res.write(Buffer.from(value));
+      }
+    };
+    await pump();
+
+  } catch (error) {
+    console.error('ElevenLabs TTS Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ==========================
 // Google Cloud TTS (Primary audio output for ALL languages)
 // ==========================
 // POST /api/tts/google  { text, language }
-// Returns: audio/mpeg binary
-// Falls back to Edge TTS automatically if GOOGLE_TTS_API_KEY is not set.
 app.post('/api/tts/google', async (req, res) => {
   try {
     const { text, language } = req.body;
@@ -814,16 +886,46 @@ app.post('/api/tts/google', async (req, res) => {
     }
 
     const { synthesize } = require('./services/ttsService');
-    const audioBuffer = await synthesize(text, language || 'en');
 
     res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Length', audioBuffer.length);
+    res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('Cache-Control', 'no-store');
-    res.send(audioBuffer);
+
+    await synthesize(text, language || 'en', res);
 
   } catch (error) {
     console.error('[Google TTS Endpoint] Error:', error.message);
-    res.status(500).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    } else {
+      res.end();
+    }
+  }
+});
+
+// GET /api/tts/google?text=...&language=...
+app.get('/api/tts/google', async (req, res) => {
+  try {
+    const { text, language } = req.query;
+    if (!text?.trim()) {
+      return res.status(400).json({ error: 'Missing `text` query param.' });
+    }
+
+    const { synthesize } = require('./services/ttsService');
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-store');
+
+    await synthesize(text, language || 'en', res);
+
+  } catch (error) {
+    console.error('[Google TTS Endpoint] Error:', error.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    } else {
+      res.end();
+    }
   }
 });
 

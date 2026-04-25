@@ -51,12 +51,15 @@ async function requestTranslation(text, targetLang, sourceLang, forceMode = fals
       model,
       messages: [
         { role: 'system', content: systemContent },
-        { role: 'user', content: `Translate this into ${targetLang}: """${text}"""` }
+        { role: 'user', content: `Text to translate into ${targetLang}:\n\n${text}` }
       ],
       temperature: forceMode ? 0 : 0.2,
       max_tokens: 1024,
     });
-    return response.choices[0].message.content.trim();
+    let resultText = response.choices[0].message.content.trim();
+    // Strip surrounding quotes if the model wrapped the translation
+    resultText = resultText.replace(/^["']+|["']+$/g, '').trim();
+    return resultText;
   } catch (err) {
     // Rate limit or model unavailable → try next model
     if ((err.status === 429 || err.status === 503) && modelIndex < REALTIME_MODELS.length - 1) {
@@ -91,7 +94,7 @@ Rules:
       },
       {
         role: 'user',
-        content: `Translate this text: """${text}"""`
+        content: `Text to translate:\n\n${text}`
       }
     ],
     temperature: 0,

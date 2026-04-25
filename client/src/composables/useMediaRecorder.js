@@ -14,8 +14,8 @@ export function useMediaRecorder() {
   const discardUnderMs = 1500;       // aggressively skip anything under 1.5s
   const maxChunkMs = 8000;
   const silenceFramesNeeded = 8;
-  const minSpeechFramesNeeded = 8;   // require almost a full second of continuous speech (120ms * 8 = 960ms)
-  const levelFloor = 18;             // relaxed slightly from 25 to ensure distant/quiet speech is caught
+  const minSpeechFramesNeeded = 4;   // require ~500ms of speech (120ms * 4)
+  const levelFloor = 12;             // lowered to catch quiet speech
   const pendingBlobs = ref([]);
   const pendingDurationMs = ref(0);
   const pendingBytes = ref(0);
@@ -134,8 +134,8 @@ export function useMediaRecorder() {
 
           const acceptByWeight = totalBytes >= minChunkBytes && elapsed >= minChunkMs;
 
-          if (!chunks.length || totalBytes < 1000 || elapsed < discardUnderMs || (!speechDetected && !acceptByWeight)) {
-            console.log('Skipping short audio chunk.', { totalBytes, elapsed });
+          if (!chunks.length || totalBytes < 1000 || elapsed < discardUnderMs || !speechDetected) {
+            console.log('Skipping short/silent audio chunk.', { totalBytes, elapsed, speechDetected });
           } else {
             const blob = activeMimeType.value
               ? new Blob(chunks, { type: activeMimeType.value })
