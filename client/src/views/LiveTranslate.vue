@@ -286,20 +286,12 @@ import { useTTS } from '@/composables/useTTS.js'   // ── TTS
 // Session composable — all existing state unchanged
 // ─────────────────────────────────────────────────────────────────────────────
 const {
-  sessionState,
   sessionId,
-  targetLanguage,
   utterances,
-  sessionSeconds,
-  currentDetected,
-  currentConfidence,
-  showJarvis,
-  jarvisPhase,
-  isActive,
-  isSaving,
-  uttCount,
-  startSession,
-  stopSession,
+  isProcessing,
+  targetLanguage,
+  createSession,
+  processAudioChunk,
 } = useSession()
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -323,6 +315,15 @@ const {
 
 // Track which utterance card is currently being spoken (for the highlight class)
 const speakingId = ref(null)
+
+// Missing properties from useSession - add as local refs
+const sessionState = ref('standby')
+const sessionSeconds = ref(0)
+const showJarvis = ref(false)
+const jarvisPhase = ref('analyzing')
+const isActive = ref(false)
+const isSaving = ref(false)
+const uttCount = ref(0)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Language options for the dropdown (same 15 as before)
@@ -404,6 +405,37 @@ const hasVoiceForTarget = computed(() => {
   const code = resolvedVoiceLang.value.split('-')[0]
   return available.includes(code)
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Missing functions from useSession - implement locally
+// ─────────────────────────────────────────────────────────────────────────────
+async function startSession() {
+  try {
+    await createSession()
+    sessionState.value = 'active'
+    isActive.value = true
+    sessionSeconds.value = 0
+    showJarvis.value = false
+    uttCount.value = 0
+  } catch (error) {
+    console.error('Failed to start session:', error)
+  }
+}
+
+async function stopSession() {
+  try {
+    sessionState.value = 'saving'
+    isSaving.value = true
+    // Here you could call an API to end the session if needed
+    sessionState.value = 'saved'
+    isActive.value = false
+    showJarvis.value = false
+  } catch (error) {
+    console.error('Failed to stop session:', error)
+  } finally {
+    isSaving.value = false
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Session button handler

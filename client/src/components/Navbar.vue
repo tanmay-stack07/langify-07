@@ -47,6 +47,11 @@ const mobileMenuOpen = ref(false);
           :class="route.path === '/planned-ui' ? 'text-white bg-white/[0.08]' : 'text-white/50 hover:text-white hover:bg-white/[0.04]'">
           Planned UI
         </router-link>
+        <router-link to="/earbuds-sync" 
+          class="px-4 py-2 text-xs font-medium tracking-wider uppercase rounded-lg transition-all duration-200"
+          :class="route.path === '/earbuds-sync' ? 'text-white bg-white/[0.08]' : 'text-white/50 hover:text-white hover:bg-white/[0.04]'">
+          Earbuds Sync
+        </router-link>
       </div>
 
       <!-- CTA -->
@@ -77,6 +82,7 @@ const mobileMenuOpen = ref(false);
         <router-link @click="mobileMenuOpen = false" to="/upload" class="block px-4 py-3 text-sm rounded-lg hover:bg-white/[0.06] transition-colors">File Upload</router-link>
         <router-link @click="mobileMenuOpen = false" to="/history" class="block px-4 py-3 text-sm rounded-lg hover:bg-white/[0.06] transition-colors">History</router-link>
         <router-link @click="mobileMenuOpen = false" to="/planned-ui" class="block px-4 py-3 text-sm rounded-lg hover:bg-white/[0.06] transition-colors">Planned UI</router-link>
+        <router-link @click="mobileMenuOpen = false" to="/earbuds-sync" class="block px-4 py-3 text-sm rounded-lg hover:bg-white/[0.06] transition-colors">Earbuds Sync</router-link>
       </div>
     </transition>
   </nav>

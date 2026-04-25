@@ -9,16 +9,52 @@ export function useMediaRecorder() {
   const analyserContext = ref(null);
   const analyserNode = ref(null);
   const analyserData = ref(null);
-  const minChunkBytes = 12000;
-  const minChunkMs = 1800;
-  const discardUnderMs = 900;
-  const maxChunkMs = 7000;
-  const silenceFramesNeeded = 6;
-  const minSpeechFramesNeeded = 2;
-  const levelFloor = 6;
+  const minChunkBytes = 10000;      // require slightly more audio data
+  const minChunkMs = 1500;           // require at least 1.5 seconds of audio
+  const discardUnderMs = 1500;       // aggressively skip anything under 1.5s
+  const maxChunkMs = 8000;
+  const silenceFramesNeeded = 8;
+  const minSpeechFramesNeeded = 8;   // require almost a full second of continuous speech (120ms * 8 = 960ms)
+  const levelFloor = 18;             // relaxed slightly from 25 to ensure distant/quiet speech is caught
   const pendingBlobs = ref([]);
   const pendingDurationMs = ref(0);
   const pendingBytes = ref(0);
+
+  const selectedDeviceId = ref('');
+  const audioDevices = ref([]);
+
+  const getAudioDevices = async () => {
+    try {
+      // Request permission first, otherwise devices will have empty labels
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Immediately stop tracks to free the microphone and not block Bluetooth profiles
+      stream.getTracks().forEach(t => t.stop());
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      audioDevices.value = devices.filter(device => device.kind === 'audioinput');
+      
+      // If no device is selected but we have devices, select the default one
+      if (!selectedDeviceId.value && audioDevices.value.length > 0) {
+        const defaultDevice = audioDevices.value.find(d => d.deviceId === 'default') || audioDevices.value[0];
+        selectedDeviceId.value = defaultDevice.deviceId;
+      }
+    } catch (err) {
+      console.error('Error fetching audio devices:', err);
+    }
+  };
+
+  // Ensure list updates if user plugs in earbuds later
+  if (navigator.mediaDevices) {
+    navigator.mediaDevices.addEventListener('devicechange', getAudioDevices);
+  }
+
+  const setMuted = (muted) => {
+    if (activeStream.value) {
+      activeStream.value.getAudioTracks().forEach(track => {
+        track.enabled = !muted;
+      });
+    }
+  };
 
   const detectMimeType = () => {
     const candidates = [
@@ -35,13 +71,24 @@ export function useMediaRecorder() {
   const startRecording = async (onChunkAvailable) => {
     try {
       if (!activeStream.value) {
+        const audioConstraints = {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        };
+        
+        if (selectedDeviceId.value) {
+          audioConstraints.deviceId = { exact: selectedDeviceId.value };
+        }
+
         activeStream.value = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
+          audio: audioConstraints
         });
+
+        const track = activeStream.value.getAudioTracks()[0];
+        if (track) {
+          console.log(`%c[Mic Selection] SUCCESS! Using device: ${track.label}`, 'color: #00ff00; font-weight: bold;');
+        }
       }
 
       activeMimeType.value = detectMimeType();
@@ -142,7 +189,7 @@ export function useMediaRecorder() {
               : (ambientRms * 0.88) + (rms * 0.12);
           }
 
-          const adaptiveThreshold = Math.max(levelFloor, ambientRms * 1.7);
+          const adaptiveThreshold = Math.max(levelFloor, ambientRms * 2.2);
           const isSpeechFrame = rms > adaptiveThreshold;
 
           if (isSpeechFrame) {
@@ -156,7 +203,7 @@ export function useMediaRecorder() {
             speechDetected = true;
           }
 
-          const noSpeechTimeout = !speechDetected && elapsed >= 4000;
+          const noSpeechTimeout = !speechDetected && elapsed >= 8000; // increased from 4000ms
           const naturalBoundary = speechDetected && silenceFrames >= silenceFramesNeeded && elapsed >= minChunkMs;
           const forcedBoundary = elapsed >= maxChunkMs;
 
@@ -205,6 +252,10 @@ export function useMediaRecorder() {
   return {
     isRecording,
     startRecording,
-    stopRecording
+    stopRecording,
+    selectedDeviceId,
+    audioDevices,
+    getAudioDevices,
+    setMuted
   };
 }

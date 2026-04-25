@@ -36,13 +36,43 @@ export function useSession() {
     }
     return overlap / Math.max(longer.length, 1);
   };
+  // ── Whisper hallucination blocklist ──────────────────────────────────────
+  // Whisper (at temperature=0) produces these phantom phrases on near-silent
+  // or noise-only audio. Block them before they become utterances.
+  const WHISPER_HALLUCINATION_BLOCKLIST = new Set([
+    'thank you.', 'thanks for watching.', 'thanks for watching!',
+    'thank you for watching.', 'thank you for watching!',
+    'subscribe', 'please subscribe.', 'like and subscribe.',
+    'bye.', 'bye bye.', 'goodbye.', 'the end.',
+    'you', 'you.', 'yeah.', 'hmm.', 'hm.', 'uh.', 'um.',
+    'so', 'so.', 'okay.', 'ok.', 'right.',
+    '...', '…', '.', 'mhm.', 'ah.', 'oh.',
+    'silence', 'music', '♪', 'applause',
+    'thank you so much.', 'thanks.', 'thanks!',
+    'see you next time.', 'see you.',
+    'subtitles by', 'captions by', 'translated by',
+    'i\'m sorry.', 'i don\'t know.', 'what?',
+    'अभी के लिए बस इतना ही', 'ये था आज का वीडियो',
+    'ご視聴ありがとうございました', 'ありがとうございます',
+    'धन्यवाद', 'नमस्ते',
+  ]);
+
   const isRepetitiveGarbage = (text) => {
     const normalized = normalizeText(text);
     if (!normalized) return true;
     if (normalized.length < 4) return true;
+
+    // Block known Whisper hallucinations
+    if (WHISPER_HALLUCINATION_BLOCKLIST.has(normalized)) return true;
+    if (WHISPER_HALLUCINATION_BLOCKLIST.has(normalized.replace(/[.!?,]+$/g, ''))) return true;
+
+    // Block single-word phantom outputs (Whisper often outputs just "you" or "so")
+    const tokens = normalized.split(' ').filter(Boolean);
+    if (tokens.length <= 2 && normalized.length < 10) return true;
+
     const repeatedPhrase = /^(.{4,40})\1{2,}$/i.test(normalized.replace(/\s+/g, ''));
     if (repeatedPhrase) return true;
-    const tokens = normalized.split(' ').filter(Boolean);
+
     if (tokens.length >= 6) {
       const unique = new Set(tokens);
       if (unique.size <= Math.ceil(tokens.length / 3)) return true;
@@ -76,7 +106,7 @@ export function useSession() {
   };
 
   const processAudioChunk = async (audioBlob) => {
-    if (!audioBlob || audioBlob.size < 12000) {
+    if (!audioBlob || audioBlob.size < 3000) {
       console.log('Skipping tiny audio blob.');
       return null;
     }

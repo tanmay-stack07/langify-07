@@ -1,13 +1,13 @@
 // client/src/composables/useTTS.js
 //
 // Universal text-to-speech composable for Langify.
-// DUAL MODE:
-//   Standard — browser Web Speech API (window.speechSynthesis). Zero cost.
-//   HD Voice — ElevenLabs Flash v2.5 via server proxy (/api/tts/elevenlabs).
-//              ~75ms latency, premium quality. Requires ELEVENLABS_API_KEY on server.
+// AUDIO ROUTING PRIORITY:
+//   1. Google Cloud TTS via /api/tts/google (Neural2 voices, 35+ languages) ← PRIMARY
+//   2. ElevenLabs Flash v2.5 via /api/tts/elevenlabs (if hdMode + key set)
+//   3. Browser Web Speech API (last resort fallback only)
 //
-// Supports Marathi (mr-IN), Hindi (hi-IN), and 20+ other languages
-// that Whisper detects and returns as 2-letter BCP-47 prefix codes.
+// This ensures Japanese, Chinese, Korean, Arabic etc. all have real audio output
+// regardless of whether the OS has those voice packs installed.
 //
 // KEY PROBLEMS THIS SOLVES:
 //   1. Chrome loads voices asynchronously — calling getVoices() on first render
@@ -317,20 +317,64 @@ export function useTTS() {
     speakChunk(0)
   }
 
-  // ── Public speak() — routes to HD or Standard ────────────────────────────
+  // ── Google Cloud TTS speak (via server — works for ALL languages) ────────
+  async function speakGoogle(text, language) {
+    if (!text?.trim()) return
+    isSpeaking.value = true
+
+    try {
+      const res = await fetch(`${API_BASE}/api/tts/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, language }),
+      })
+
+      if (!res.ok) throw new Error(`Server TTS failed: ${res.status}`)
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+
+      if (currentAudio) { currentAudio.pause(); currentAudio = null }
+
+      currentAudio = new Audio(url)
+      currentAudio.onended = () => {
+        isSpeaking.value = false
+        URL.revokeObjectURL(url)
+        currentAudio = null
+      }
+      currentAudio.onerror = () => {
+        console.warn('[useTTS] Google audio playback error, falling back to Web Speech')
+        isSpeaking.value = false
+        URL.revokeObjectURL(url)
+        currentAudio = null
+        speakStandard(text, LANG_MAP[language] || language || 'en-US')
+      }
+      currentAudio.play()
+
+    } catch (err) {
+      console.warn('[useTTS] Google TTS failed, falling back to Web Speech:', err.message)
+      isSpeaking.value = false
+      speakStandard(text, LANG_MAP[language] || language || 'en-US')
+    }
+  }
+
+  // ── Public speak() — Google TTS primary, ElevenLabs HD optional, Web Speech fallback
   function speak(text, whisperCode, targetLangName) {
     if (!text?.trim()) return
 
     const bcp47 = resolveBCP47(whisperCode, targetLangName)
+    // Resolve the short language code for Google TTS (e.g. 'ja', 'zh', 'hi')
+    const normalised = targetLangName?.toLowerCase().trim() || ''
+    const shortCode = targetToCode[normalised] || whisperCode || 'en'
     lastSpokenLang.value = bcp47
 
-    // Cancel anything in-flight
     stop()
 
     if (hdMode.value && hdAvailable.value) {
-      speakHD(text, bcp47)
+      speakHD(text, bcp47);
     } else {
-      speakStandard(text, bcp47)
+      // Prioritize Google Cloud TTS (Server Proxy) for all languages
+      speakGoogle(text, shortCode);
     }
   }
 

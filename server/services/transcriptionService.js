@@ -31,12 +31,13 @@ async function transcribeAudio(filePath, originalName, responseFormat = 'verbose
     const reqData = {
       file: fs.createReadStream(renamedPath),
       model: 'whisper-large-v3-turbo',
-      temperature: 0,
+      temperature: 0.1,  // increased from 0 to reduce hallucinations on noise
       response_format: responseFormat,
     };
 
+    // Groq Whisper hard limit: 896 chars. Cap here so no caller can ever exceed it.
     if (prompt) {
-      reqData.prompt = prompt;
+      reqData.prompt = prompt.slice(0, 880);
     }
 
     return await groq.audio.transcriptions.create(reqData);
@@ -52,7 +53,7 @@ async function transcribeAudio(filePath, originalName, responseFormat = 'verbose
           model: 'whisper-1',
           response_format: openAIFormat,
           prompt,
-          temperature: 0,
+          temperature: 0.1,  // increased from 0 to reduce hallucinations
         });
         return transcription;
       } catch (fallbackError) {

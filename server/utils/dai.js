@@ -57,11 +57,11 @@ async function getUserContext(userId) {
   return { profile, vocab };
 }
 
-// ── BUILD WHISPER PROMPT (injects known vocab for better transcription) ──
+// ── BUILD WHISPER PROMPT (only injects vocab terms if user has them) ──
 function buildWhisperPrompt(vocab) {
-  const terms = Object.keys(vocab).slice(0, 50).join(', ');
-  if (!terms) return undefined;
-  return `User commonly uses: ${terms}.`;
+  const terms = Object.keys(vocab).slice(0, 15).join(', ');
+  if (!terms) return ''; // no vocab = no bias, Whisper auto-detects language freely
+  return `Known terms: ${terms}.`;
 }
 
 // ── BUILD GPT-4O SYSTEM PROMPT ────────────────────────────────────────

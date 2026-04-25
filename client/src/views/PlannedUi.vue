@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router';
 import { useAuth } from '../composables/useAuth';
 import { useMediaRecorder } from '../composables/useMediaRecorder';
 import { useSession } from '../composables/useSession';
+import { useTTS } from '../composables/useTTS';
 import { API_BASE } from '@/config/api.js';
 
 const tabs = [
@@ -72,7 +73,7 @@ const supportedFormats = ['mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'ogg', 'opus', 'w
 
 const router = useRouter();
 const { currentUser, logout } = useAuth();
-const { isRecording, startRecording, stopRecording } = useMediaRecorder();
+const { isRecording, startRecording, stopRecording, selectedDeviceId, audioDevices, getAudioDevices, setMuted } = useMediaRecorder();
 const {
   sessionId,
   utterances,
@@ -82,12 +83,16 @@ const {
   processAudioChunk
 } = useSession();
 
+const { speak, speakIfEnabled, autoRead, toggleAutoRead, stop: stopTTS, isSpeaking } = useTTS();
+
+// Enable voice output by default (autoRead starts false in the composable)
+autoRead.value = true;
+
 const activeTab = ref('home');
 const selectedOutputLanguage = ref('English');
 const isLiveSessionRunning = ref(false);
 const liveError = ref('');
 const transcriptEl = ref(null);
-const speakOutput = ref(true);
 
 const selectedFile = ref(null);
 const fileInput = ref(null);
@@ -291,14 +296,11 @@ const startLiveSession = async () => {
 const stopLiveSession = () => {
   stopRecording();
   isLiveSessionRunning.value = false;
-
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-  }
+  stopTTS(); // Stop any in-progress Google TTS / ElevenLabs / Web Speech
 };
 
 const speakTranslatedText = (text, originalText) => {
-  if (!speakOutput.value || !text || !('speechSynthesis' in window)) return;
+  if (!text) return;
 
   const normalizedText = (text || '').trim().toLowerCase();
   const normalizedOriginal = (originalText || '').trim().toLowerCase();
@@ -307,13 +309,9 @@ const speakTranslatedText = (text, originalText) => {
     return;
   }
 
-  window.speechSynthesis.cancel();
-
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = speechLanguageCodes[selectedOutputLanguage.value] || 'en-US';
-  utterance.rate = 1;
-  utterance.pitch = 1;
-  window.speechSynthesis.speak(utterance);
+  // Routes through Google Cloud TTS (Neural2/WaveNet voices for all languages)
+  // speakIfEnabled checks autoRead internally
+  speakIfEnabled(text, null, selectedOutputLanguage.value);
 };
 
 const loadSessions = async () => {
@@ -362,8 +360,13 @@ watch(activeTab, (tab) => {
   if (tab === 'history') loadSessions();
 });
 
-onMounted(() => {
+watch(isSpeaking, (speaking) => {
+  setMuted(speaking);
+});
+
+onMounted(async () => {
   targetLanguage.value = selectedOutputLanguage.value;
+  await getAudioDevices();
 });
 </script>
 
@@ -448,7 +451,7 @@ onMounted(() => {
                   </button>
                   <button
                     type="button"
-                    class="planned-btn planned-btn--soft"
+                    class="planned-btn planned-btn--ghost"
                     @click="activeTab = 'upload'"
                     @mousemove="handleReflectiveMove"
                     @mouseleave="resetReflectiveMove"
@@ -684,9 +687,19 @@ onMounted(() => {
                     </select>
                   </label>
 
+                  <label class="planned-live-field" style="margin-top: 1rem;">
+                    <span>Microphone Input (for Earbuds)</span>
+                    <select v-model="selectedDeviceId">
+                      <option value="">Default Microphone</option>
+                      <option v-for="device in audioDevices" :key="device.deviceId" :value="device.deviceId">
+                        {{ device.label || 'Unknown Microphone' }}
+                      </option>
+                    </select>
+                  </label>
+
                   <label class="planned-live-toggle">
-                    <input v-model="speakOutput" type="checkbox" />
-                    <span>Speak translated output</span>
+                    <input v-model="autoRead" type="checkbox" />
+                    <span>Speak translated output (Google TTS)</span>
                   </label>
 
                   <div class="planned-live-actions">

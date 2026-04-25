@@ -19,7 +19,7 @@ require('dotenv').config();
 const app = express();
 const httpServer = http.createServer(app);
 const PORT = process.env.PORT || 3000;
-const BASE_STT_PROMPT = 'Transcribe only the dominant nearby speaker. Ignore background chatter, TV audio, overlapping far voices, filler noise, and repeated hallucinated phrases. If speech is unclear, return only the clearly spoken words.';
+const BASE_STT_PROMPT = 'Transcribe speech exactly as spoken in whatever language is used. Do not translate. Ignore background noise.';
 
 // Startup Guard
 const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'GROQ_API_KEY'];
@@ -52,7 +52,7 @@ app.use(morgan('dev'));
 app.use(express.json());
 
 // ==========================
-// Socket.IO — Meeting Mode (Phase 3)
+// Socket.IO â€” Meeting Mode (Phase 3)
 // ==========================
 const io = new SocketIO(httpServer, {
   cors: {
@@ -61,7 +61,7 @@ const io = new SocketIO(httpServer, {
   },
 });
 
-// Track active rooms: roomId → { members: Set<socketId>, hostId, targetLanguage }
+// Track active rooms: roomId â†’ { members: Set<socketId>, hostId, targetLanguage }
 const meetingRooms = new Map();
 
 io.on('connection', (socket) => {
@@ -151,7 +151,7 @@ const transcribeLimiter = rateLimit({
 
 const translateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 60,
+  max: 600,                 // raised from 60 — live translation sends chunks every few seconds
   message: { error: 'Too many translation requests. Please wait before trying again.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -172,10 +172,11 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    version: '1.0.0',
+    version: '2.0.0',
     models: {
       stt: 'whisper-large-v3-turbo',
-      llm: 'llama-3.3-70b-versatile'
+      translation: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      tts: process.env.GOOGLE_TTS_API_KEY ? 'google-cloud-neural2' : 'edge-tts'
     }
   });
 });
@@ -372,7 +373,7 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
       return res.status(400).json({ error: 'No audio file provided.' });
     }
 
-    if ((req.file.size || 0) < 12000) {
+    if ((req.file.size || 0) < 8000) {  // increased from 3000 to match client
       try { fs.unlinkSync(req.file.path); } catch {}
       return res.status(200).json({
         success: false,
@@ -393,7 +394,7 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
         await ensureUserProfile(userId);
         const { profile, vocab } = await getUserContext(userId);
         const vocabPrompt = buildWhisperPrompt(vocab);
-        whisperPrompt = `${BASE_STT_PROMPT} ${vocabPrompt}`.trim();
+        whisperPrompt = `${BASE_STT_PROMPT} ${vocabPrompt}`.trim().slice(0, 880);
         systemPrompt = buildSystemPrompt(profile, vocab, sessionState);
         fallbackToStandard = false;
       } catch (e) {
@@ -406,6 +407,102 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
     const originalText = typeof transcription === 'string' ? transcription : transcription.text;
     const detectedLanguage = transcription.language || 'auto';
     logUsage('whisper-large-v3-turbo', 5);
+
+    // Confidence / Whisper Segment Filtering
+    let maxNoSpeechProb = 0;
+    let minAvgLogProb = 0;
+    if (transcription.segments && Array.isArray(transcription.segments)) {
+      minAvgLogProb = transcription.segments[0]?.avg_logprob || 0;
+      for (const seg of transcription.segments) {
+        if (seg.no_speech_prob > maxNoSpeechProb) maxNoSpeechProb = seg.no_speech_prob;
+        if (seg.avg_logprob < minAvgLogProb) minAvgLogProb = seg.avg_logprob;
+      }
+    }
+
+    // AGGRESSIVE FILTERING:
+    // 1. High no_speech_prob (> 0.35)
+    // 2. Very low avg_logprob (< -1.0) - indicates Whisper is guessing wildly
+    if (maxNoSpeechProb > 0.35 || minAvgLogProb < -1.0) {
+      console.log(`[Hallucination Filter] Dropped. Prob: ${maxNoSpeechProb.toFixed(2)}, LogProb: ${minAvgLogProb.toFixed(2)}. Text: "${originalText}"`);
+      return res.status(200).json({
+        success: false,
+        skipped: true,
+        errorCode: 'AUDIO_CHUNK_SKIPPED',
+        providerMessage: 'Ignored background noise or low-confidence transcription.'
+      });
+    }
+
+    // ── Server-side Whisper hallucination filter ─────────────────────────
+    // Whisper at temperature=0 produces these phantom phrases on silence/noise.
+    // Catching them HERE saves Groq translation API calls + rate limit budget.
+    const WHISPER_HALLUCINATIONS = new Set([
+      'thank you.', 'thanks for watching.', 'thanks for watching!',
+      'thank you for watching.', 'thank you for watching!',
+      'subscribe', 'please subscribe.', 'like and subscribe.',
+      'bye.', 'bye bye.', 'goodbye.', 'the end.',
+      'you', 'you.', 'yeah.', 'hmm.', 'hm.', 'uh.', 'um.',
+      'so', 'so.', 'okay.', 'ok.', 'right.', 'yes.',
+      '...', '.', 'mhm.', 'ah.', 'oh.',
+      'silence', 'music', 'applause',
+      'see you next time.', 'see you.',
+      'subtitles by', 'captions by', 'translated by',
+      'general lobby, car', 'general lobby, car.', 'general lobby car',
+      'hey.', 'hey', 'hey hey', 'hey hey hey',
+      'stellaori', 'stellaori.', 'maggokay', 'maggokay.', 'maggie okay',
+      'khnk', 'khenk', 'khink',
+    ]);
+    const isRepetitive = (text) => {
+      const t = text.toLowerCase().replace(/[^\p{L}\s]/gu, '').trim();
+      if (!t) return false;
+      const words = t.split(/\s+/);
+      const unique = new Set(words);
+      // 1. Single word repeated 3+ times (e.g. "test test test")
+      if (words.length >= 3 && unique.size === 1) return true;
+      // 2. Short string with mostly repeated words (e.g. "burn burn burn burn burn")
+      if (words.length >= 5 && unique.size <= 2) return true;
+      // 3. Exact phrase repeated 3+ times
+      const phraseRegex = /^(.+?)( \1){2,}$/iu;
+      if (phraseRegex.test(t)) return true;
+      return false;
+    };
+
+    const normalizedSTT = (originalText || '').trim().toLowerCase();
+    const strippedSTT = normalizedSTT.replace(/[.!?,…]+$/g, '');
+
+    const isGibberish = (text) => {
+      const t = text.trim();
+      const words = t.split(/\s+/);
+      const hasDevanagari = /[\u0900-\u097F]/.test(t);
+      const hasLatin = /[a-zA-Z]/.test(t);
+      
+      // If a very short string (< 7 words) aggressively mixes English and Hindi scripts, it's almost certainly hallucinated silence
+      if (words.length < 7 && hasDevanagari && hasLatin) return true;
+
+      // Unnatural punctuation density
+      const letters = t.replace(/[^a-zA-Z\u0900-\u097F]/g, '').length;
+      const punct = t.replace(/[a-zA-Z\u0900-\u097F\s0-9]/g, '').length;
+      if (letters > 0 && punct / letters > 0.4) return true;
+
+      return false;
+    };
+
+    if (
+      !normalizedSTT ||
+      normalizedSTT.length < 3 ||
+      WHISPER_HALLUCINATIONS.has(normalizedSTT) ||
+      WHISPER_HALLUCINATIONS.has(strippedSTT) ||
+      (normalizedSTT.split(/\s+/).length <= 2 && normalizedSTT.length < 8) ||
+      isRepetitive(originalText) ||
+      isGibberish(originalText)
+    ) {
+      console.log(`[Hallucination Filter] Blocked: "${originalText}"`);
+      return res.status(200).json({
+        success: false,
+        skipped: true,
+        errorCode: 'AUDIO_CHUNK_SKIPPED',
+        providerMessage: 'Whisper hallucination filtered out.'
+      });
+    }
 
     // 2. Translation
     let result = {};
@@ -423,9 +520,9 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
       logUsage('llama-3.3-70b-versatile', originalText.length / 4);
     }
 
-    // 4. Persistence (Supabase)
+    // 4. Persistence (Supabase) â€” fire-and-forget, does NOT block the response
     if (sessionId) {
-      const { error: dbError } = await serviceSupabase
+      serviceSupabase
         .from('utterances')
         .insert([{
           session_id: sessionId,
@@ -436,9 +533,9 @@ app.post('/api/translate', translateLimiter, attachUserIfPresent, upload.single(
           inferred_intent: result.inferredIntent,
           alt_1: result.alt_1,
           alt_2: result.alt_2
-        }]);
-
-      if (dbError) console.error('Supabase Persistence Error:', dbError);
+        }])
+        .then(({ error }) => { if (error) console.error('Supabase Persistence Error:', error); })
+        .catch(e => console.error('Supabase Persistence Error:', e));
     }
 
     const responsePayload = {
@@ -704,12 +801,42 @@ app.post('/api/tts/elevenlabs', translateLimiter, async (req, res) => {
 });
 
 // ==========================
+// Google Cloud TTS (Primary audio output for ALL languages)
+// ==========================
+// POST /api/tts/google  { text, language }
+// Returns: audio/mpeg binary
+// Falls back to Edge TTS automatically if GOOGLE_TTS_API_KEY is not set.
+app.post('/api/tts/google', async (req, res) => {
+  try {
+    const { text, language } = req.body;
+    if (!text?.trim()) {
+      return res.status(400).json({ error: 'Missing `text` field.' });
+    }
+
+    const { synthesize } = require('./services/ttsService');
+    const audioBuffer = await synthesize(text, language || 'en');
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', audioBuffer.length);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(audioBuffer);
+
+  } catch (error) {
+    console.error('[Google TTS Endpoint] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================
 // Start Server
 // ==========================
 httpServer.listen(PORT, () => {
-  console.log(`\n🚀 Server running on http://localhost:${PORT}`);
-  console.log(`✅ Startup Guard: All required API keys validated.`);
-  console.log(`📡 Models: whisper-large-v3-turbo + llama-3.3-70b-versatile`);
-  console.log(`🔗 Meeting Mode: Socket.IO enabled`);
-  console.log(`🛡  Rate Limits: Transcribe 10/15min | Translate 60/hr\n`);
+  console.log(`\nðŸš€ Server running on http://localhost:${PORT}`);
+  console.log(`âœ… Startup Guard: All required API keys validated.`);
+  console.log(`ðŸ“¡ Models: whisper-large-v3-turbo + llama-3.3-70b-versatile`);
+  console.log(`ðŸ”— Meeting Mode: Socket.IO enabled`);
+  console.log(`ðŸ›¡  Rate Limits: Transcribe 10/15min | Translate 60/hr\n`);
 });
+
+
+
